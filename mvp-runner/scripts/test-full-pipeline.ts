@@ -6,9 +6,6 @@
  */
 
 import { spawn } from 'child_process';
-import { promisify } from 'util';
-
-const exec = promisify(require('child_process').exec);
 
 async function runScript(script: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
