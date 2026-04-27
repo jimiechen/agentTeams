@@ -33,20 +33,17 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
-# Runtime data
-pids/
-*.pid
-*.seed
-*.pid.lock
-
-# Coverage
-coverage/
-.nyc_output/
-
 # Temporary files
 tmp/
 temp/
 *.tmp
 
+# Coverage
+coverage/
+.nyc_output/
+
 # Test outputs
 test-results/
+
+# Runs directory (optional - contains execution results)
+runs/
