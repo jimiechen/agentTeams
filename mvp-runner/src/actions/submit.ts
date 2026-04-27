@@ -1,42 +1,55 @@
-// src/actions/submit.ts - 点击发送按钮提交
+// src/actions/submit.ts - 提交 Prompt（使用 Enter 键）
+// 正确方案：使用 CDP Input.dispatchKeyEvent 触发 Lexical 原生提交
 
 import createDebug from 'debug';
 import { CDPClient } from '../cdp/client.js';
-import { resolve } from '../selectors/resolver.js';
 import { SubmitError } from '../errors.js';
 
 const debug = createDebug('mvp:action:submit');
 
+const INPUT_SELECTOR = '.chat-input-v2-input-box-editable';
+
 export async function submit(cdp: CDPClient): Promise<void> {
-  debug('Submitting prompt');
+  debug('Submitting prompt via Enter key');
 
-  const selector = await resolve(cdp, 'chat.send_button');
-
-  // 检查按钮是否可用
-  const state = await cdp.evaluate(`
+  // 聚焦输入框
+  await cdp.evaluate(`
     (function() {
-      const btn = document.querySelector('${selector}');
-      if (!btn) return { found: false };
-      return {
-        found: true,
-        disabled: btn.disabled,
-        className: btn.className
-      };
+      const el = document.querySelector('${INPUT_SELECTOR}');
+      if (el) el.focus();
     })()
   `);
+  await sleep(300);
 
-  if (!state.found) {
-    throw new SubmitError('Send button not found');
-  }
+  // 使用 CDP Input.dispatchKeyEvent 发送 Enter 键
+  // 这会触发 Lexical 的原生提交行为
+  debug('Dispatching Enter key...');
+  
+  await cdp.Input.dispatchKeyEvent({
+    type: 'keyDown',
+    key: 'Enter',
+    code: 'Enter',
+    keyCode: 13,
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  
+  await sleep(100);
+  
+  await cdp.Input.dispatchKeyEvent({
+    type: 'keyUp',
+    key: 'Enter',
+    code: 'Enter',
+    keyCode: 13,
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
 
-  if (state.disabled) {
-    throw new SubmitError('Send button is disabled');
-  }
+  await sleep(500);
 
-  // 点击发送按钮
-  await cdp.evaluate(`
-    document.querySelector('${selector}').click();
-  `);
+  debug('Submit completed');
+}
 
-  debug('Submit clicked');
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
