@@ -1,16 +1,22 @@
 {
   "name": "mvp-runner",
   "version": "0.1.0",
-  "description": "Trae Agent Team MVP - CDP automated Chat runner",
+  "description": "Trae Agent Team MVP - CDP automated Chat runner with Lark bridge",
   "type": "module",
   "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
     "mvp": "tsx src/runner.ts",
     "test:selectors": "tsx test/selectors.test.ts",
     "test:actions": "tsx test/actions.test.ts"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.36.0",
+    "async-mutex": "^0.5.0",
     "chrome-remote-interface": "^0.33.2",
     "debug": "^4.3.4",
+    "dotenv": "^16.4.5",
+    "p-retry": "^6.2.0",
     "yaml": "^2.3.4"
   },
   "devDependencies": {
