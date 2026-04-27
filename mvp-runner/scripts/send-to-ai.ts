@@ -33,7 +33,6 @@ async function switchTaskSlot(client: CDP.Client, slotIndex: number): Promise<vo
   
   console.log(`🔀 Switching to slot #${slotIndex}...`);
   
-  // 点击任务列表项
   const clickExpr = `
     (function() {
       const items = document.querySelectorAll('.index-module__task-item___zOpfg, [class*="task-item"]');
@@ -51,7 +50,6 @@ async function switchTaskSlot(client: CDP.Client, slotIndex: number): Promise<vo
     throw new Error(`Failed to find task slot #${slotIndex}`);
   }
   
-  // 等待切换完成
   await new Promise(r => setTimeout(r, 1000));
   console.log(`✅ Switched to slot #${slotIndex}`);
 }
@@ -61,17 +59,14 @@ async function fillPrompt(client: CDP.Client, message: string): Promise<void> {
   
   console.log(`📝 Filling prompt: "${message.slice(0, 50)}${message.length > 50 ? '...' : ''}"`);
   
-  // 找到输入框并填充
   const fillExpr = `
     (function() {
       const input = document.querySelector('.chat-input-v2-input-box-editable, [contenteditable="true"]');
       if (!input) return false;
       
-      // 设置内容
       input.innerText = ${JSON.stringify(message)};
       input.textContent = ${JSON.stringify(message)};
       
-      // 触发输入事件
       const events = ['input', 'change', 'keyup', 'keydown'];
       events.forEach(type => {
         const evt = new Event(type, { bubbles: true });
@@ -95,7 +90,6 @@ async function submitMessage(client: CDP.Client): Promise<void> {
   
   console.log('📤 Submitting message...');
   
-  // 点击发送按钮
   const submitExpr = `
     (function() {
       const btn = document.querySelector('.chat-input-v2-send-button, button[aria-label*="发送"], button[type="submit"]');
@@ -103,7 +97,6 @@ async function submitMessage(client: CDP.Client): Promise<void> {
         btn.click();
         return true;
       }
-      // 尝试回车
       const input = document.querySelector('.chat-input-v2-input-box-editable, [contenteditable="true"]');
       if (input) {
         const evt = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true });
@@ -122,6 +115,10 @@ async function submitMessage(client: CDP.Client): Promise<void> {
   console.log('✅ Message submitted');
 }
 
+/**
+ * 等待 AI 响应 - 修复版
+ * 关键：检测 AI 消息（非用户消息）的出现
+ */
 async function waitForResponse(client: CDP.Client, timeoutMs: number = 60000): Promise<string> {
   const { Runtime } = client;
   
@@ -129,74 +126,102 @@ async function waitForResponse(client: CDP.Client, timeoutMs: number = 60000): P
   
   const startTime = Date.now();
   const checkInterval = 500;
-  let lastTurnCount = 0;
   
-  // 获取当前 turn 数量
-  const getCountExpr = `
-    document.querySelectorAll('[class*="chat-turn"]').length
+  // 获取当前 AI 消息数量（排除用户消息）
+  const getAICountExpr = `
+    (function() {
+      const turns = document.querySelectorAll('.chat-turn');
+      let aiCount = 0;
+      turns.forEach(turn => {
+        if (!turn.classList.contains('user')) {
+          aiCount++;
+        }
+      });
+      return { total: turns.length, ai: aiCount };
+    })()
   `;
-  const countResult = await Runtime.evaluate({ expression: getCountExpr, returnByValue: true });
-  lastTurnCount = countResult.result.value || 0;
-  console.log(`Current turn count: ${lastTurnCount}`);
   
-  // 等待新消息出现
+  const initialResult = await Runtime.evaluate({ expression: getAICountExpr, returnByValue: true });
+  const initialCount = initialResult.result.value?.ai || 0;
+  console.log(`Initial state: ${initialResult.result.value?.total} total turns, ${initialCount} AI turns`);
+  
+  // 等待新的 AI 消息出现
   while (Date.now() - startTime < timeoutMs) {
     await new Promise(r => setTimeout(r, checkInterval));
     
-    const newCountResult = await Runtime.evaluate({ expression: getCountExpr, returnByValue: true });
-    const newCount = newCountResult.result.value || 0;
+    const currentResult = await Runtime.evaluate({ expression: getAICountExpr, returnByValue: true });
+    const currentAiCount = currentResult.result.value?.ai || 0;
     
-    if (newCount > lastTurnCount) {
-      console.log(`✅ New message detected (${lastTurnCount} → ${newCount})`);
+    if (currentAiCount > initialCount) {
+      console.log(`✅ New AI message detected (${initialCount} → ${currentAiCount})`);
       
       // 等待内容稳定
       let stableCount = 0;
       let lastText = '';
+      let attempts = 0;
+      const maxAttempts = 30; // 最多等待15秒稳定
       
-      while (stableCount < 3 && Date.now() - startTime < timeoutMs) {
+      while (stableCount < 3 && attempts < maxAttempts && Date.now() - startTime < timeoutMs) {
         await new Promise(r => setTimeout(r, 500));
+        attempts++;
         
+        // 获取最后一个 AI 消息的文本
         const getTextExpr = `
           (function() {
-            const turns = document.querySelectorAll('[class*="chat-turn"]');
-            const last = turns[turns.length - 1];
-            return last ? last.innerText : '';
+            const turns = document.querySelectorAll('.chat-turn');
+            for (let i = turns.length - 1; i >= 0; i--) {
+              if (!turns[i].classList.contains('user')) {
+                let text = turns[i].innerText || '';
+                // 清理菜单文本
+                text = text.replace(/复制图片/g, '').trim();
+                return text;
+              }
+            }
+            return '';
           })()
         `;
+        
         const textResult = await Runtime.evaluate({ expression: getTextExpr, returnByValue: true });
         const currentText = textResult.result.value || '';
         
         if (currentText === lastText && currentText.length > 0) {
           stableCount++;
+          console.log(`  Content stable (${stableCount}/3): ${currentText.slice(0, 50)}...`);
         } else {
+          if (currentText.length > 0) {
+            console.log(`  Content changing: ${currentText.slice(0, 50)}...`);
+          }
           stableCount = 0;
           lastText = currentText;
         }
       }
       
-      return lastText;
+      if (lastText.length > 0) {
+        return lastText;
+      }
+    }
+    
+    // 每5秒输出一次状态
+    if (Math.floor((Date.now() - startTime) / 5000) > Math.floor((Date.now() - startTime - checkInterval) / 5000)) {
+      const statusResult = await Runtime.evaluate({ expression: getAICountExpr, returnByValue: true });
+      console.log(`  Waiting... (${Math.floor((Date.now() - startTime) / 1000)}s) - AI turns: ${statusResult.result.value?.ai}`);
     }
   }
   
-  throw new Error('Timeout waiting for AI response');
+  throw new Error(`Timeout waiting for AI response after ${timeoutMs}ms`);
 }
 
 async function sendToAI(options: SendOptions): Promise<string> {
   const client = await connectCDP();
   
   try {
-    // 1. 切换任务 slot
     if (options.slot !== undefined) {
       await switchTaskSlot(client, options.slot);
     }
     
-    // 2. 填充消息
     await fillPrompt(client, options.message);
-    
-    // 3. 提交
     await submitMessage(client);
     
-    // 4. 等待响应
     const response = await waitForResponse(client, options.timeout || 60000);
     
     return response;
