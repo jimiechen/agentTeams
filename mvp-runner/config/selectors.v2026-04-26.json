@@ -1,0 +1,23 @@
+{
+  "trae_version": "SOLO IDE (2026-04-26)",
+  "chat": {
+    "input": {
+      "primary": ".chat-input-v2-input-box-editable",
+      "fallback": ["[contenteditable=\"true\"]", "textarea"]
+    },
+    "send_button": {
+      "primary": ".chat-input-v2-send-button",
+      "fallback": ["button[aria-label*=\"发送\" i]", "button[type=\"submit\"]"]
+    },
+    "chat_turn": {
+      "primary": "[class*=\"chat-turn\"]",
+      "fallback": ["[class*=\"message-item\"]"]
+    }
+  },
+  "task_list": {
+    "item": {
+      "primary": ".index-module__task-item___zOpfg",
+      "fallback": ["[class*=\"task-item\"]", "[role=\"treeitem\"]"]
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "name": "trae-agent-team",
+  "displayName": "Trae Agent Team",
+  "description": "飞书驱动的 Trae 多任务多智能体协作系统 - Agent 配置与 Trae 版本适配管理",
+  "version": "0.1.0",
+  "publisher": "trae-agent-team",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:traeAgentTeam.openConfig",
+    "onCommand:traeAgentTeam.probeUI",
+    "onCommand:traeAgentTeam.startTeam",
+    "onCommand:traeAgentTeam.stopTeam",
+    "onView:traeAgentTeamStatus"
+  ],
+  "main": "./src/extension.js",
+  "icon": "media/icon.png",
+  "contributes": {
+    "commands": [
+      {
+        "command": "traeAgentTeam.openConfig",
+        "title": "Trae Team: 打开配置面板",
+        "category": "Trae Agent Team"
+      },
+      {
+        "command": "traeAgentTeam.probeUI",
+        "title": "Trae Team: 探测 Trae UI",
+        "category": "Trae Agent Team"
+      },
+      {
+        "command": "traeAgentTeam.startTeam",
+        "title": "Trae Team: 启动 Agent Team",
+        "category": "Trae Agent Team"
+      },
+      {
+        "command": "traeAgentTeam.stopTeam",
+        "title": "Trae Team: 停止 Agent Team",
+        "category": "Trae Agent Team"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "traeAgentTeamSidebar",
+          "title": "Trae Agent Team",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "traeAgentTeamSidebar": [
+        {
+          "type": "webview",
+          "id": "traeAgentTeamStatus",
+          "name": "Agent 状态"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "lint": "eslint src/**/*.js",
+    "test": "node test/test-runner.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "eslint": "^8.56.0"
+  },
+  "dependencies": {
+    "chrome-remote-interface": "^0.32.2"
+  }
+}

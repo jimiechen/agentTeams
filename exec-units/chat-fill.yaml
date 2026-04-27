@@ -1,0 +1,179 @@
+# 执行卡片：Chat 自动填充（v0.10 已验证版）
+# 基于 Day 0 真实验证结果更新
+
+id: UNIT-CHAT-FILL-03
+version: "3.0.0"
+module: CDPExecutor
+trigger: chat_mutex_acquired AND user_idle_confirmed
+description: 通过 CDP 向 Trae Chat 输入框填充 Prompt 并点击发送按钮提交
+
+# === Day 0 验证结论 ===
+# ✅ CDP 可连接（9222 端口，1 个 page Target）
+# ✅ DOM 第 1 层可穿透（无 Shadow DOM）
+# ✅ 文本注入：innerText + InputEvent（Input.insertText 无效）
+# ✅ 提交方式：发送按钮点击（Enter 键无效）
+# ✅ 响应检测：轮询 .chat-turn 数量变化（25-40 秒）
+# ✅ 任务切换：.index-module__task-item___zOpfg[index].click()
+
+# === 前置条件 ===
+preconditions:
+  - cdp_connected: true
+  - chat_mutex_acquired: true
+  - user_idle_confirmed: true
+  - quota_can_send: true
+
+# === Step 定义（基于 Day 0 验证的实际 CDP 调用） ===
+steps:
+  # Step 1: 切换目标任务槽位
+  - name: switch_to_task_slot
+    cdp_domain: Runtime
+    cdp_method: evaluate
+    params:
+      expression: |
+        (function() {
+          const items = document.querySelectorAll('.index-module__task-item___zOpfg');
+          if (!items[${state.taskIndex}]) return null;
+          items[${state.taskIndex}].click();
+          return { success: true, index: ${state.taskIndex} };
+        })()
+      returnByValue: true
+    verify: result.value.success === true
+    on_fail: emit('selector:failed', { element: 'task_list_item' })
+    post_delay: 1500ms  # 等待 Chat 面板切换加载
+
+  # Step 2: 聚焦 Chat 输入框
+  - name: focus_chat_input
+    cdp_domain: Runtime
+    cdp_method: evaluate
+    params:
+      expression: |
+        (function() {
+          const input = document.querySelector('.chat-input-v2-input-box-editable')
+            || document.querySelector('[contenteditable="true"]');
+          if (!input) return null;
+          input.focus();
+          return { success: true, tagName: input.tagName };
+        })()
+      returnByValue: true
+    verify: result.value.success === true
+    on_fail: emit('selector:failed', { element: 'chat_input' })
+    post_delay: 500ms
+
+  # Step 3: 填充 Prompt（innerText + InputEvent，Day 0 验证有效）
+  - name: fill_prompt
+    cdp_domain: Runtime
+    cdp_method: evaluate
+    params:
+      expression: |
+        (function() {
+          const input = document.querySelector('.chat-input-v2-input-box-editable')
+            || document.querySelector('[contenteditable="true"]');
+          if (!input) return { success: false, error: 'input_not_found' };
+          input.innerText = ${JSON.stringify(state.prompt)};
+          input.dispatchEvent(new InputEvent('input', {
+            bubbles: true,
+            inputType: 'insertText',
+            data: ${JSON.stringify(state.prompt)}
+          }));
+          return { success: true, length: ${JSON.stringify(state.prompt)}.length };
+        })()
+      returnByValue: true
+    verify: result.value.success === true
+    on_fail: emit('fill:failed', { reason: result.value.error })
+    post_delay: 1000ms  # 确保文本生效
+
+  # Step 4: 点击发送按钮提交（Day 0 验证：Enter 无效，必须点击按钮）
+  - name: click_send_button
+    cdp_domain: Runtime
+    cdp_method: evaluate
+    params:
+      expression: |
+        (function() {
+          const btn = document.querySelector('.chat-input-v2-send-button');
+          if (!btn) return { success: false, error: 'send_button_not_found' };
+          if (btn.disabled) return { success: false, error: 'button_disabled' };
+          btn.click();
+          return { success: true };
+        })()
+      returnByValue: true
+    verify: result.value.success === true
+    on_fail:
+      - condition: "button_disabled"
+        action: wait_2000ms_then_retry
+      - condition: "send_button_not_found"
+        action: emit('selector:failed', { element: 'send_button' })
+    post_action: emit('chat:sent', { taskId: state.taskId })
+
+  # Step 5: 等待 AI 响应完成（轮询 .chat-turn 数量变化）
+  - name: wait_response
+    strategy: poll
+    poll_interval: 1000ms
+    max_wait: 60000ms  # 60 秒超时
+    cdp_domain: Runtime
+    cdp_method: evaluate
+    params:
+      expression: |
+        (function() {
+          const turns = document.querySelectorAll('.chat-turn');
+          return { count: turns.length };
+        })()
+      returnByValue: true
+    completion_condition: "result.value.count > ${state.initialTurnCount}"
+    on_timeout:
+      action: emit('response:timeout', { taskId: state.taskId })
+      notify: lark_card('⏰ AI 响应超时（60s），任务可能失败')
+
+  # Step 6: 抓取 AI 响应文本
+  - name: capture_response
+    cdp_domain: Runtime
+    cdp_method: evaluate
+    params:
+      expression: |
+        (function() {
+          const turns = document.querySelectorAll('.chat-turn');
+          const last = turns[turns.length - 1];
+          if (!last) return { success: false };
+          return {
+            success: true,
+            text: last.innerText.substring(0, 2000),
+            turnCount: turns.length
+          };
+        })()
+      returnByValue: true
+    post_action: emit('task:response_captured', { text: result.value.text })
+
+# === 验证 ===
+verify:
+  - condition: "fill_prompt success AND click_send_button success AND wait_response completed"
+    severity: ERROR
+    message: "Chat 填充提交流程完成"
+  - condition: "capture_response.text is not empty"
+    severity: WARN
+    message: "AI 响应文本为空"
+
+# === 降级与报警 ===
+fallback:
+  - condition: "selector_failed"
+    action: 尝试 fallback selector（[contenteditable="true"]）
+    notify: lark_card('🔴 选择器失效，已尝试降级')
+  - condition: "fill_failed"
+    action: 重试一次 → 仍失败则释放锁 + 告警
+  - condition: "response_timeout"
+    action: 释放锁 + 任务状态回滚到 assigned
+    notify: lark_card('⏰ AI 响应超时，任务已回滚')
+
+# === 指标 ===
+metrics:
+  - "chat.fill.attempt"
+  - "chat.fill.success"
+  - "chat.fill.duration_ms"
+  - "chat.response.wait_ms"
+
+# === Day 0 验证的性能基线 ===
+performance_baseline:
+  task_switch_ms: 2000
+  focus_ms: 500
+  fill_50chars_ms: 500
+  submit_ms: 500
+  response_wait_ms: 30000
+  total_per_task_ms: 36000

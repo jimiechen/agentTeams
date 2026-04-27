@@ -1,0 +1,87 @@
+# 执行卡片：Git 自动提交
+# PRD 对应：3.1.3 Git 版本控制 + 10.4 Git 冲突处理
+
+id: UNIT-GIT-COMMIT-04
+version: "1.1.0"
+module: GitManager
+trigger: file_change_detected | task_complete
+description: 监听工作区变更，自动执行 git add/commit，处理冲突和推送失败。文件变更仅触发暂存，任务完成时触发完整提交。
+
+xstate_binding:
+  machine_id: gitCommitMachine
+  events: [CHANGES_DETECTED, STAGE, COMMIT, VERIFY, PUSH, CONFLICT, RETRY]
+  guards: [hasChanges, isOnCorrectBranch, noConflict, pushSuccess]
+  actions: [stageChanges, commitChanges, verifyCommit, pushToRemote, notifyConflict, retryWithBackoff]
+
+state_schema:
+  taskId: string
+  branch: string
+  conflictCount: number
+  lastCommitHash: string
+  pushRetryCount: number
+  maxPushRetries: number        # 默认 3
+
+steps:
+  # === 阶段一：文件变更触发（仅暂存） ===
+  - name: check_branch
+    action: git rev-parse --abbrev-ref HEAD
+    guard: isOnCorrectBranch
+    on_fail: git checkout state.branch
+    idempotent: true
+
+  - name: check_changes
+    action: git status --porcelain
+    guard: hasChanges
+    on_fail: skip (no changes to stage)
+    idempotent: true
+
+  - name: stage_changes
+    action: git add -A
+    idempotent: true                    # git add 天然幂等
+    trigger: file_change_detected       # 文件变更时仅执行暂存
+
+  # === 阶段二：任务完成触发（完整提交 + 推送） ===
+  - name: commit
+    action: git commit -m '{taskId}: auto-save - {timestamp}'
+    trigger: task_complete              # 仅任务完成时触发提交
+    idempotent: true                    # 相同 tree hash 不产生新 commit
+    dedup_check: git log --oneline -1 | grep '{taskId}'
+    retry: 2
+    retry_delay: 1000ms
+    on_fail: check_conflict
+
+  - name: verify_commit
+    action: git log -1 --format=%H
+    compare_with: expected_hash
+
+  - name: push_to_remote
+    action: git push origin state.branch
+    retry_strategy: exponential_backoff(5s, 15s, 45s)
+    on_fail: notify_push_failure
+
+  - name: check_conflict
+    action: git status | grep 'both modified'
+    on_conflict: notify_human
+
+verify:
+  - condition: "git status --porcelain === ''"
+    severity: INFO
+    message: "工作区已干净"
+  - condition: "lastCommitHash !== null"
+    severity: ERROR
+    message: "提交未成功"
+
+fallback:
+  - condition: "merge_conflict_detected"
+    action: stash_changes() + notify_lark("Git 冲突：{taskId}")
+    human_action: "/git resolve {taskId}"
+  - condition: "push_retries_exhausted"
+    action: notify_lark("推送失败，请检查网络")
+  - condition: "disk_full_or_permission_denied"
+    action: pause_task() + emit_fatal_alert()
+
+metrics:
+  - "git.commit.count"
+  - "git.conflict.count"
+  - "git.commit.latency_ms"
+  - "git.push.failure.count"

@@ -1,0 +1,11 @@
+tasks:
+  - id: task-01
+    slot_index: 0
+    prompt: "用一句话解释什么是 CDP 协议"
+  - id: task-02
+    slot_index: 1
+    prompt: "列出 3 个 Node.js 的流行 Web 框架"
+  - id: task-03
+    slot_index: 0
+    prompt: "写一个计算斐波那契数列第 N 项的 TypeScript 函数"
+output_dir: "./runs"
