@@ -103,7 +103,6 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
 /**
  * 获取最后一次 AI 响应内容
  * 参考 test-cn-cdp-results.js 的实现方式
- * 修复：正确处理图片响应和空内容
  */
 async function getLastAIResponse(cdp: CDPClient): Promise<string> {
   const result = await cdp.evaluate(`
@@ -119,26 +118,14 @@ async function getLastAIResponse(cdp: CDPClient): Promise<string> {
         const isUserMsg = turn.classList.contains('user');
         
         if (!isUserMsg) {
-          // 获取原始文本
+          // 获取文本并清理
           let text = turn.innerText || '';
           
-          // 检查是否是真正的图片内容（不是菜单）
-          const hasImageContent = turn.querySelector('img') !== null && 
-                                  !turn.querySelector('img').closest('.icd-avatar') &&
-                                  !turn.querySelector('img').closest('.avatar');
-          
-          // 如果包含实际图片内容，保留提示
-          if (hasImageContent && text.includes('复制图片')) {
-            return '[包含图片内容，请在 Trae 中查看]';
-          }
-          
-          // 否则清理菜单文本
+          // 移除菜单文本
           text = text.replace(/复制图片/g, '').trim();
           
-          // 如果清理后为空，但有图片元素，说明是图片
-          if (!text && turn.querySelector('img')) {
-            return '[包含图片内容，请在 Trae 中查看]';
-          }
+          // 移除 Thought 标签（如果需要纯文本响应）
+          // text = text.replace(/Thought[\s\S]*?(?=\n\n|$)/, '').trim();
           
           return text;
         }
