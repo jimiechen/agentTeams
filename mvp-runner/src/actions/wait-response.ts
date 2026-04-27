@@ -63,6 +63,8 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
   // 阶段 2：等待内容稳定并解析
   let stableCount = 0;
   let lastText = '';
+  let contentDetected = false;
+  let contentDetectedAt = 0;
 
   while (Date.now() - startTime < timeoutMs) {
     const result = await getLastAIResponse(cdp);
@@ -73,12 +75,20 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
       continue;
     }
     
+    // 记录首次检测到内容
+    if (!contentDetected) {
+      contentDetected = true;
+      contentDetectedAt = Date.now();
+      debug(`Content first detected: ${result.length} chars`);
+    }
+
     // 检测文本是否稳定
     if (result === lastText) {
       stableCount++;
     } else {
       stableCount = 0;
       lastText = result;
+      debug(`Content changed: ${result.length} chars`);
     }
 
     // 连续 stableMs/pollMs 次文本不变，判定完成
@@ -86,6 +96,12 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
       const elapsed = Date.now() - startTime;
       debug(`Response stable after ${elapsed}ms (${result.length} chars)`);
       return result;
+    }
+
+    // 如果内容存在超过 30 秒但仍不稳定，也返回（防止长时间打字）
+    if (contentDetected && Date.now() - contentDetectedAt > 30000 && lastText.length > 10) {
+      debug(`Content exists for 30s but not stable, returning (${lastText.length} chars)`);
+      return lastText;
     }
 
     await sleep(pollMs);
