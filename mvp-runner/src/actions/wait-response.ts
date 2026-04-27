@@ -1,5 +1,5 @@
 // src/actions/wait-response.ts - 等待 AI 响应完成并解析内容
-// 参考: trae-cdp.js, test-cn-cdp-results.js
+// 通过心跳检查侧边栏任务状态，任务完成后解析结果
 
 import createDebug from 'debug';
 import { CDPClient } from '../cdp/client.js';
@@ -8,9 +8,9 @@ import { ResponseTimeoutError } from '../errors.js';
 const debug = createDebug('mvp:action:wait');
 
 export interface WaitResponseOptions {
-  timeoutMs?: number;    // 默认 60000
-  stableMs?: number;     // 文本稳定判定时长，默认 1500
-  pollMs?: number;       // 轮询间隔，默认 500
+  timeoutMs?: number;    // 默认 120000
+  pollMs?: number;       // 心跳间隔，默认 2000
+  taskName?: string;     // 要检查的任务名称，默认 PMCLI
 }
 
 export interface TaskResult {
@@ -25,100 +25,159 @@ export interface TaskResult {
 }
 
 /**
- * 等待 AI 响应并解析内容
- * 参考 test-cn-cdp-results.js 的实现
+ * 等待 AI 响应完成并解析内容
+ * 通过心跳检查侧边栏任务状态，任务完成后才解析结果
  */
 export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): Promise<string> {
-  const timeoutMs = opts?.timeoutMs ?? 60000;
-  const stableMs = opts?.stableMs ?? 1500;
-  const pollMs = opts?.pollMs ?? 500;
-
-  // 记录当前消息数量 - 使用 .chat-turn 选择器（参考 trae-cdp.js）
-  const beforeCount: number = await cdp.evaluate(`
-    document.querySelectorAll('.chat-turn').length
-  `);
-  debug(`Current chat-turn count: ${beforeCount}, waiting for new message...`);
+  const timeoutMs = opts?.timeoutMs ?? 120000;
+  const pollMs = opts?.pollMs ?? 2000;
+  const taskName = opts?.taskName ?? 'PMCLI';
 
   const startTime = Date.now();
+  debug(`Starting heartbeat check for task "${taskName}" (timeout=${timeoutMs}ms, poll=${pollMs}ms)`);
 
-  // 阶段 1：等待新消息出现
+  let checkCount = 0;
+  let lastStatus = '';
+
+  // 心跳循环：定时检查任务状态
   while (Date.now() - startTime < timeoutMs) {
-    const currentCount: number = await cdp.evaluate(`
-      document.querySelectorAll('.chat-turn').length
-    `);
+    checkCount++;
+    
+    const status = await checkTaskStatus(cdp, taskName);
+    debug(`Heartbeat #${checkCount}: task="${taskName}", status=${status.status} (${status.reason})`);
+    
+    // 记录状态变化
+    if (status.status !== lastStatus) {
+      debug(`Status changed: ${lastStatus} -> ${status.status}`);
+      lastStatus = status.status;
+    }
 
-    if (currentCount > beforeCount) {
-      debug(`New message detected (count: ${beforeCount} → ${currentCount})`);
+    // 任务完成（completed 或 interrupted）
+    if (status.status === 'completed' || status.status === 'interrupted') {
+      const elapsed = Date.now() - startTime;
+      debug(`Task ${status.status} after ${elapsed}ms (checked ${checkCount} times)`);
       break;
     }
 
+    // 等待下一次心跳
     await sleep(pollMs);
   }
 
-  // 检查是否超时（阶段 1）
+  // 检查是否超时
   if (Date.now() - startTime >= timeoutMs) {
+    debug('Heartbeat timeout, trying to get partial response');
+    const partialResult = await getLastAIResponse(cdp);
+    if (partialResult && partialResult.length > 0) {
+      debug(`Returning partial response (${partialResult.length} chars)`);
+      return partialResult;
+    }
     throw new ResponseTimeoutError(timeoutMs);
   }
 
-  // 阶段 2：等待内容稳定并解析
-  let stableCount = 0;
-  let lastText = '';
-  let contentDetected = false;
-  let contentDetectedAt = 0;
-
-  while (Date.now() - startTime < timeoutMs) {
-    const result = await getLastAIResponse(cdp);
-    
-    // 跳过空内容
-    if (!result || result.length < 2) {
-      await sleep(pollMs);
-      continue;
-    }
-    
-    // 记录首次检测到内容
-    if (!contentDetected) {
-      contentDetected = true;
-      contentDetectedAt = Date.now();
-      debug(`Content first detected: ${result.length} chars`);
-    }
-
-    // 检测文本是否稳定
-    if (result === lastText) {
-      stableCount++;
-    } else {
-      stableCount = 0;
-      lastText = result;
-      debug(`Content changed: ${result.length} chars`);
-    }
-
-    // 连续 stableMs/pollMs 次文本不变，判定完成
-    if (stableCount >= Math.ceil(stableMs / pollMs)) {
-      const elapsed = Date.now() - startTime;
-      debug(`Response stable after ${elapsed}ms (${result.length} chars)`);
-      return result;
-    }
-
-    // 如果内容存在超过 30 秒但仍不稳定，也返回（防止长时间打字）
-    if (contentDetected && Date.now() - contentDetectedAt > 30000 && lastText.length > 10) {
-      debug(`Content exists for 30s but not stable, returning (${lastText.length} chars)`);
-      return lastText;
-    }
-
-    await sleep(pollMs);
+  // 任务完成后，解析最终结果
+  debug('Task completed, parsing result...');
+  
+  // 等待一小段时间确保内容已渲染
+  await sleep(500);
+  
+  const result = await getLastAIResponse(cdp);
+  
+  if (result && result.length > 0) {
+    debug(`Result parsed: ${result.length} chars`);
+    return result;
   }
 
-  // 超时但已有部分响应
-  if (lastText.length > 0) {
-    debug(`Timeout but returning partial response (${lastText.length} chars)`);
-    return lastText;
+  // 如果解析失败，再等待一下重试
+  await sleep(1000);
+  const retryResult = await getLastAIResponse(cdp);
+  
+  if (retryResult && retryResult.length > 0) {
+    debug(`Result parsed on retry: ${retryResult.length} chars`);
+    return retryResult;
   }
 
   throw new ResponseTimeoutError(timeoutMs);
 }
 
 /**
+ * 检查指定任务的状态
+ * 通过侧边栏任务列表的文本和图标判断
+ */
+async function checkTaskStatus(cdp: CDPClient, taskName: string): Promise<{
+  status: 'unknown' | 'in_progress' | 'completed' | 'interrupted';
+  text: string;
+  reason: string;
+}> {
+  const result = await cdp.evaluate<{
+    status: 'unknown' | 'in_progress' | 'completed' | 'interrupted';
+    text: string;
+    reason: string;
+  }>(`
+    (function() {
+      // 获取所有任务项
+      const items = document.querySelectorAll('.index-module__task-item___zOpfg');
+      
+      // 查找指定名称的任务
+      let targetTask = null;
+      for (const item of items) {
+        const text = item.textContent || '';
+        if (text.includes('` + taskName + `')) {
+          targetTask = item;
+          break;
+        }
+      }
+      
+      if (!targetTask) {
+        return { 
+          status: 'unknown', 
+          text: '', 
+          reason: 'task-not-found' 
+        };
+      }
+      
+      const text = targetTask.textContent || '';
+      
+      // 方法1: 通过文本内容判断状态
+      let status = 'unknown';
+      if (text.includes('完成')) {
+        status = 'completed';
+      } else if (text.includes('进行中')) {
+        status = 'in_progress';
+      } else if (text.includes('中断')) {
+        status = 'interrupted';
+      }
+      
+      // 方法2: 通过完成图标验证（如果文本判断为完成）
+      if (status === 'completed') {
+        const hasCompleteIcon = targetTask.querySelector('.index-module__task-status__complete___ThOzg') !== null;
+        if (!hasCompleteIcon) {
+          // 文本说完成但没有图标，可能是误判
+          status = 'in_progress';
+        }
+      }
+      
+      // 构建 reason 字符串（避免模板字符串嵌套问题）
+      let reasonStr = 'cannot-determine-status';
+      if (status !== 'unknown') {
+        reasonStr = 'detected-by-text';
+        if (status === 'completed') {
+          reasonStr = reasonStr + '-and-icon';
+        }
+      }
+      
+      return {
+        status: status,
+        text: text.slice(0, 100),
+        reason: reasonStr
+      };
+    })()
+  `);
+  
+  return result || { status: 'unknown', text: '', reason: 'eval-failed' };
+}
+
+/**
  * 获取最后一次 AI 响应内容
- * 参考 test-cn-cdp-results.js 的实现方式
  */
 async function getLastAIResponse(cdp: CDPClient): Promise<string> {
   const result = await cdp.evaluate(`
@@ -129,20 +188,12 @@ async function getLastAIResponse(cdp: CDPClient): Promise<string> {
       // 从后往前找，找到最后一个 AI 消息（不包含 user class）
       for (let i = turns.length - 1; i >= 0; i--) {
         const turn = turns[i];
-        
-        // 参考 trae-cdp.js: 使用 classList.contains('user') 判断
         const isUserMsg = turn.classList.contains('user');
         
         if (!isUserMsg) {
-          // 获取文本并清理
           let text = turn.innerText || '';
-          
           // 移除菜单文本
           text = text.replace(/复制图片/g, '').trim();
-          
-          // 移除 Thought 标签（如果需要纯文本响应）
-          // text = text.replace(/Thought[\s\S]*?(?=\n\n|$)/, '').trim();
-          
           return text;
         }
       }
@@ -156,7 +207,6 @@ async function getLastAIResponse(cdp: CDPClient): Promise<string> {
 
 /**
  * 获取详细的任务结果（包含代码块、图片等）
- * 参考 test-cn-cdp-results.js
  */
 export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
   const result: TaskResult = {
@@ -176,7 +226,6 @@ export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
         const turns = document.querySelectorAll('.chat-turn');
         if (turns.length === 0) return null;
         
-        // 找到最后一个 AI 消息
         let lastAiTurn = null;
         for (let i = turns.length - 1; i >= 0; i--) {
           if (!turns[i].classList.contains('user')) {
@@ -191,7 +240,6 @@ export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
           text: lastAiTurn.innerText || '',
           html: lastAiTurn.innerHTML || '',
           hasCode: lastAiTurn.innerHTML?.includes('<code') || false,
-          hasTask: lastAiTurn.innerText?.includes('待办') || lastAiTurn.innerText?.includes('任务') || false
         };
       })()
     `);
@@ -201,7 +249,6 @@ export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
       result.html = data.html || '';
       result.hasCodeBlock = data.hasCode || false;
       
-      // 解析代码块
       if (result.hasCodeBlock) {
         const detailData = await cdp.evaluate(`
           (function() {

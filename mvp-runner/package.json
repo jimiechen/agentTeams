@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "dev:devcli": "tsx watch src/index-devcli.ts",
+    "start:devcli": "tsx src/index-devcli.ts",
     "mvp": "tsx src/runner.ts",
     "test:selectors": "tsx test/selectors.test.ts",
     "test:actions": "tsx test/actions.test.ts",
