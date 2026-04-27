@@ -1,0 +1,55 @@
+{
+  "trae_version": "SOLO IDE",
+  "probe_date": "2026-04-26",
+  "os": "Windows 10/11",
+  "selectors": {
+    "chat_input": {
+      "primary": ".chat-input-v2-input-box-editable",
+      "fallback": "[contenteditable=\"true\"]",
+      "layer": 1,
+      "verified_by": "probe-chat-input",
+      "inject_method": "innerText + InputEvent",
+      "note": "Input.insertText 无效，需用 element.innerText = text + dispatchEvent(new InputEvent('input', {bubbles: true}))"
+    },
+    "send_button": {
+      "primary": ".chat-input-v2-send-button",
+      "fallback": null,
+      "layer": 1,
+      "verified_by": "test-send-methods",
+      "note": "Enter 键无效，必须点击发送按钮"
+    },
+    "task_list_container": {
+      "primary": ".index-module__task-list",
+      "fallback": null,
+      "layer": 1,
+      "verified_by": "probe-task-panel"
+    },
+    "task_list_item": {
+      "primary": ".index-module__task-item___zOpfg",
+      "fallback": null,
+      "layer": 1,
+      "verified_by": "probe-task-panel",
+      "note": "hash 后缀可能随版本变化，建议用 class 前缀匹配"
+    },
+    "assistant_message": {
+      "primary": ".chat-turn",
+      "fallback": null,
+      "layer": 1,
+      "verified_by": "test-multi-tasks-final",
+      "note": "通过轮询 .chat-turn 数量变化检测新消息"
+    },
+    "loading_indicator": {
+      "primary": ".chat-turn-loading",
+      "fallback": null,
+      "layer": 1,
+      "verified_by": "未专门验证",
+      "note": "检测不稳定，仅作辅助"
+    }
+  },
+  "submit_key": "send_button_click",
+  "submit_key_note": "Enter/Cmd+Enter/Ctrl+Enter 均无效，必须通过 .chat-input-v2-send-button click() 提交",
+  "response_detection": "C",
+  "response_detection_note": "轮询 .chat-turn 元素数量变化，平均响应时间 25-40 秒",
+  "inject_method": "innerText + InputEvent",
+  "inject_method_note": "Input.insertText 无效，需用 element.innerText = text + dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText'}))"
+}

@@ -1,0 +1,96 @@
+# 执行卡片：lark-cli 终端管理
+# PRD 对应：3.3 lark-cli 集成 + 10.5 lark-cli 稳定性保障
+
+id: UNIT-LARK-TERMINAL-05
+version: "1.1.0"
+module: LarkTerminal
+trigger: system_startup | websocket_disconnected
+description: lark-cli 独立终端管理，含心跳检测、自动重连、消息去重、鉴权与 token 刷新
+
+xstate_binding:
+  machine_id: larkTerminalMachine
+  events: [START, MESSAGE_RECEIVED, HEARTBEAT_TIMEOUT, DISCONNECT, RECONNECT, MAX_RETRIES]
+  guards: [isProcessAlive, isDuplicateMessage, reconnectAttemptsLeft]
+  actions: [startProcess, parseMessage, dispatchCommand, emitHeartbeatWarn, reconnectProcess, notifyOffline]
+
+state_schema:
+  chatId: string
+  processAlive: boolean
+  lastMessageTime: number
+  heartbeatIntervalMs: number    # 默认 60000
+  reconnectAttempts: number
+  maxReconnectAttempts: number   # 默认 10
+  messageCache: Array<string>    # LRU, 最近 1000 条
+
+steps:
+  - name: start_process
+    action: spawn('lark-cli', ['event', '--chat-id', chatId])
+    post_action: start_heartbeat_timer
+
+  - name: start_heartbeat_timer
+    action: setInterval(check_heartbeat, heartbeatIntervalMs)
+
+  - name: check_heartbeat
+    action: Date.now() - lastMessageTime > 120000
+    on_timeout: trigger_reconnect
+
+  - name: receive_message
+    action: parse_ndjson_line(line)
+    guard: isDuplicateMessage
+    on_duplicate: discard
+    on_new: dispatch_to_handler
+
+  - name: dispatch_to_handler
+    action: |
+      switch(message.type):
+        'text': CommandHandler.handle(message)
+        'card': BitableSync.handle(message)
+        'event': EventHandler.handle(message)
+
+  - name: trigger_reconnect
+    action: kill_old_process() + spawn_new_process()
+    guard: reconnectAttemptsLeft
+    on_max_retries: notify_offline
+
+  - name: notify_offline
+    action: emit('lark:offline', { chatId })
+    notify: lark_card("🔴 lark-cli 离线，任务监听已暂停")
+
+verify:
+  - condition: "process.exitCode === null (still running)"
+    severity: ERROR
+    message: "lark-cli 进程已退出"
+  - condition: "reconnectAttempts < maxReconnectAttempts"
+    severity: WARN
+    message: "重连次数接近上限"
+
+fallback:
+  - condition: "process_crash"
+    action: auto_restart() + log_restart_count()
+    recovery: if restart_count > 3/hour: notify_human
+  - condition: "max_reconnect_exhausted"
+    action: emit('lark:offline') + pause_task_queue()
+    notify: lark_card("lark-cli 重连失败，请手动检查")
+
+metrics:
+  - "lark.message.received"
+  - "lark.message.duplicate"
+  - "lark.reconnect.count"
+  - "lark.heartbeat.timeout"
+
+# 鉴权与 Token 刷新（评审驱动：Claude 最终评审指出 lark-cli 作为系统入口需完善鉴权）
+auth:
+  token_refresh:
+    enabled: true
+    interval_minutes: 120              # token 自动刷新间隔
+    retry_on_failure: 3                # 刷新失败重试次数
+  message_verification:
+    enabled: true                      # 消息签名校验
+    verify_fields: ["message_id", "timestamp"]
+  command_prefix_whitelist:
+    - "/task"
+    - "/status"
+    - "/git"
+    - "/approve"
+    - "/reject"
+  allowed_senders: []                  # 空=不限制，生产环境建议配置具体用户 ID

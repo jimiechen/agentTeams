@@ -1,0 +1,23 @@
+{
+  "name": "mvp-runner",
+  "version": "0.1.0",
+  "description": "Trae Agent Team MVP - CDP automated Chat runner",
+  "type": "module",
+  "scripts": {
+    "mvp": "tsx src/runner.ts",
+    "test:selectors": "tsx test/selectors.test.ts",
+    "test:actions": "tsx test/actions.test.ts"
+  },
+  "dependencies": {
+    "chrome-remote-interface": "^0.33.2",
+    "debug": "^4.3.4",
+    "yaml": "^2.3.4"
+  },
+  "devDependencies": {
+    "@types/chrome-remote-interface": "^0.33.0",
+    "@types/debug": "^4.1.13",
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

@@ -1,0 +1,83 @@
+# 执行卡片：UI 自动识别探测
+# PRD 对应：3.4 UI Recognizer + 3.8 场景检测
+
+id: UNIT-UI-PROBE-02
+version: "1.0.0"
+module: UIRecognizer
+trigger: cdp_connection_established
+description: CDP 连接后自动探测 Trae IDE UI 元素，多策略匹配并缓存选择器
+
+xstate_binding:
+  machine_id: uiRecognizeMachine
+  events: [PROBE_START, CACHE_HIT, MATCH_SUCCESS, MATCH_FAIL, OVERRIDE_APPLY]
+  guards: [cacheValid, matchConfidenceHigh, overrideExists]
+  actions: [injectProbe, matchElements, saveCache, applyOverride, emitWarn]
+
+state_schema:
+  port: number
+  cacheLoaded: boolean
+  selectors: Record<string, { selector: string; confidence: number; strategy: string }>
+  traeVersion: string
+  probeTimeoutMs: number        # 默认 10000
+
+steps:
+  - name: load_cache
+    action: read_file('~/.trae-agent-team/fingerprints/ui-fingerprint-{port}.json')
+    guard: cacheValid
+    on_success: validate_cached_selectors
+    on_fail: trigger_full_probe
+
+  - name: validate_cached_selectors
+    action: document.querySelector(selector) !== null
+    parallel: true
+    on_fail: trigger_full_probe
+
+  - name: trigger_full_probe
+    action: inject_probe_script() + wait(2000ms)
+    output: raw_fingerprints
+
+  - name: match_pipeline
+    action: run_matching_pipeline(raw_fingerprints)
+    pipeline:
+      - P0: data-testid 正则匹配
+      - P1: role + contentEditable 匹配
+      - P2: placeholder 关键词匹配
+      - P3: ariaLabel 关键词匹配
+      - P4: classChain 模糊匹配
+      - P5: tagName + 位置推断
+
+  - name: verify_selectors
+    action: document.querySelector(selector) !== null
+    parallel: true
+    max_fail_allowed: 2    # 允许 2 个非核心元素未匹配
+
+  - name: save_cache
+    action: write_file('~/.trae-agent-team/fingerprints/ui-fingerprint-{port}.json')
+    output: CACHE_SAVED
+
+  - name: apply_manual_override
+    action: load_overrides_from_team_yaml()
+    guard: overrideExists
+
+verify:
+  - condition: "selectors.chatInput.confidence >= 0.7"
+    severity: FATAL
+    message: "Chat 输入框识别失败，系统无法运行"
+  - condition: "selectors.sendButton.confidence >= 0.5"
+    severity: ERROR
+    message: "发送按钮识别失败"
+  - condition: "cache.save_success === true"
+    severity: WARN
+    message: "选择器缓存写入失败"
+
+fallback:
+  - condition: "auto_probe_failed"
+    action: apply_overrides_from_team_yaml()
+  - condition: "overrides_also_failed"
+    action: emit('ui:probe_failed') + abort_task()
+    notify: lark_card("🔴 UI 探测完全失败，请手动配置选择器覆盖")
+
+metrics:
+  - "ui.probe.duration_ms"
+  - "ui.strategy.fallback_triggered"
+  - "ui.cache.hit_rate"

@@ -1,0 +1,84 @@
+# 执行卡片：ChatMutex 锁管理
+# PRD 对应：3.2 并发控制 + 10.2 ChatMutex 异常保护
+
+id: UNIT-MUTEX-01
+version: "1.0.0"
+module: ChatMutex
+trigger: task_assigned_to_instance
+description: 实例级 Chat 输入框互斥锁获取与排队机制，含超时保护和崩溃兜底
+
+xstate_binding:
+  machine_id: chatMutexMachine
+  events: [ACQUIRE, RELEASE, TIMEOUT, PROCESS_CRASH]
+  guards: [canAcquire, isQueueEmpty, isTimedOut]
+  actions: [startLockTimer, clearLockTimer, enqueueTask, forceRelease, emitTimeout, persistState]
+
+state_schema:
+  port: number
+  locked: boolean
+  currentTaskId: string | null
+  queue: Array<{ taskId: string; timestamp: number }>
+  lockTimeoutMs: number          # 默认 30000
+  maxQueueSize: number           # 默认 100
+
+steps:
+  - name: check_lock_status
+    action: read_state()
+    guard: canAcquire
+    on_success: acquire_lock
+    on_fail: enqueue_task
+
+  - name: acquire_lock
+    action: update_state({ locked: true, currentTaskId: taskId })
+    output: LOCK_GRANTED
+    post_action: startLockTimer
+
+  - name: start_lock_timer
+    action: setTimeout(() => emit('mutex:timeout', taskId), state.lockTimeoutMs)
+    on_timeout: force_release_and_alert
+
+  - name: enqueue_task
+    action: queue.push({ taskId, timestamp: now() })
+    guard: queue.length < maxQueueSize
+    on_fail: reject_task
+    output: LOCK_QUEUED
+
+  - name: release_lock
+    action: update_state({ locked: false, currentTaskId: null })
+    post_action: clearLockTimer + advanceQueue
+    output: LOCK_RELEASED
+
+  - name: advance_queue
+    action: |
+      if queue.length > 0:
+        next = queue.shift()
+        acquire_lock(next.taskId)
+
+verify:
+  - condition: "state.currentTaskId === taskId"
+    severity: ERROR
+    message: "锁状态未正确更新"
+  - condition: "queue.every(q => q.taskId !== taskId)"
+    severity: WARN
+    message: "获取锁后仍存在于队列中"
+  - condition: "lockTimer !== null"
+    severity: WARN
+    message: "锁计时器未启动"
+
+fallback:
+  - condition: "lock_timeout_triggered"
+    action: forceRelease() + emit('mutex:timeout', { port, taskId })
+    notify: lark_card("⚠️ Agent-{id} 锁超时释放")
+    recovery: scan_temp_lock_file() + clear_if_expired(60000ms)
+  - condition: "process_crash_detected"
+    action: write_crash_log() + persist_state()
+    recovery: on_restart_scan_mutex_files()
+  - condition: "queue_full"
+    action: reject_task(taskId, reason: 'Queue Full')
+    notify: lark_card("任务队列已满")
+
+metrics:
+  - "mutex.acquire.latency_ms"
+  - "mutex.queue.length"
+  - "mutex.timeout.count"
+  - "mutex.wait_time.histogram"

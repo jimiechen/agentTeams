@@ -1,0 +1,56 @@
+# Trae IDE 智能体路由与快捷键配置
+# 配置方式：在 Trae 设置中指定 .trae/agents/ 为自定义 Agent 目录
+
+agents:
+  default: "@architect"
+  shortcuts:
+    "cmd+shift+a": "@architect"
+    "cmd+shift+c": "@core-dev"
+    "cmd+shift+t": "@qa-expert"
+    "cmd+shift+s": "@security-reviewer"
+    "cmd+shift+p": "@ai-prompt-eng"
+    "cmd+shift+d": "@devops-eng"
+    "cmd+shift+m": "@pm-lead"
+
+workspace_context:
+  - "docs/DO_AND_TESTING_SPEC.md"
+  - "docs/CDP_MOCK_STRATEGY.md"
+  - "exec-units/"
+  - "src/"
+  - "trae-agent-team-prd.md"
+
+# 智能体协同工作流
+workflow:
+  # 上下文共享策略（评审驱动：Claude 最终评审指出多 Agent 审查同一代码时上下文一致性风险）
+  context_sharing:
+    strategy: "file_snapshot"       # 每次工作流阶段切换时生成代码快照
+    snapshot_trigger:
+      - "code_generation_complete"  # @core-dev 完成编码后
+      - "pr_created"                # PR 创建后
+    snapshot_storage: ".trae/snapshots/{taskId}/{stage}.md"
+    consistency_check: true         # 审查前自动校验快照与当前文件是否一致
+    stale_snapshot_threshold: 3600000  # 快照过期时间 1h，超时则重新生成
+
+  requirement_split:
+    agents: ["@architect", "@ai-prompt-eng"]
+    input: "PRD 章节"
+    output: "exec-units/*.yaml + 状态机定义"
+    gate: "YAML 校验通过"
+
+  code_generation:
+    agents: ["@core-dev"]
+    input: "YAML 卡片 + AI Prompt 模板"
+    output: "src/*.ts + __tests__/*.test.ts"
+    gate: "覆盖率 ≥85%"
+
+  quality_verification:
+    agents: ["@qa-expert", "@security-reviewer"]
+    input: "测试用例 + PR 代码"
+    output: "覆盖率报告 + Review Checklist"
+    gate: "CI 全绿 + DoD 10 项"
+
+  delivery:
+    agents: ["@devops-eng", "@pm-lead"]
+    input: "合并后代码"
+    output: "CI 流水线 + 飞书看板更新"
+    gate: "Phase 验收标准"

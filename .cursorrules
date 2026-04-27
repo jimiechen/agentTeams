@@ -1,0 +1,133 @@
+# Trae Agent Team - AI 协作指令集
+
+> 本文件为 AI 编码助手（Cursor/Copilot/Cline 等）提供项目上下文和编码规范。
+
+## 项目概述
+
+Trae Agent Team 是一个飞书驱动的 Trae 多任务多智能体系统，通过 CDP 注入 Trae IDE 实现任务自动化。
+
+## 技术栈
+
+- **运行时**: Node.js >= 18, TypeScript
+- **CDP 客户端**: chrome-remote-interface
+- **飞书**: lark-cli (WebSocket)
+- **测试**: Vitest + Playwright + c8
+- **代码规范**: ESLint + Prettier
+
+## 编码规范
+
+### 强制规则
+
+1. **测试先行**: 每个功能模块必须先写测试，再写实现
+2. **结构化日志**: 使用 `logger` 模块，禁止 `console.log/error`
+3. **无魔法数字**: 超时、重试次数等常量提取到 `config` 或 `CONFIG` 对象
+4. **禁止硬编码凭证**: 使用 `secret-manager.ts` 加载敏感信息
+5. **降级路径可测试**: 每个 fallback 策略必须可通过 mock 触发验证
+6. **AI 生成标记**: AI 生成的代码块需标注 `// @ai-gen: <brief>`
+
+### 日志格式
+
+```typescript
+// ✅ 正确
+logger.info('Chat filled successfully', { taskId: 'T-001', agent: 'agent-1', strategy: 'P0', durationMs: 245 });
+
+// ❌ 错误
+console.log('filled');
+```
+
+### 错误处理
+
+```typescript
+// ✅ 正确 - 带重试和告警
+try {
+  await cdpClient.Runtime.evaluate({ expression: script });
+} catch (err) {
+  logger.error('CDP evaluate failed', { taskId, error: err.message });
+  eventBus.emit('cdp:error', { taskId, error: err });
+  throw err; // 或降级处理
+}
+
+// ❌ 错误 - 静默吞掉
+try {
+  await cdpClient.Runtime.evaluate({ expression: script });
+} catch (e) {}
+```
+
+### 配置化
+
+```typescript
+// ✅ 正确
+const CONFIG = {
+  checkInterval: 5000,
+  stableCount: 3,
+  chatSendTimeout: 10000,
+};
+
+// ❌ 错误
+setTimeout(() => { ... }, 5000); // 硬编码超时
+```
+
+## 测试规范
+
+### 命名
+
+```typescript
+// 测试文件: {module-name}.test.ts
+// 测试用例: should {预期行为} when {条件}
+it('should release lock after timeout when task crashes', async () => { ... });
+```
+
+### 结构
+
+```typescript
+describe('ChatMutex', () => {
+  describe('lock timeout', () => {
+    it('should auto-release after 30s timeout', async () => { ... });
+    it('should emit mutex:timeout event', async () => { ... });
+  });
+
+  describe('queue ordering', () => {
+    it('should process tasks in FIFO order', async () => { ... });
+  });
+});
+```
+
+### Mock 外部依赖
+
+```typescript
+// ✅ 正确 - Mock CDP
+vi.mock('chrome-remote-interface', () => ({
+  default: createMockCDP,
+}));
+
+// ✅ 正确 - Mock child_process
+vi.mock('child_process', () => ({
+  spawn: vi.fn(() => ({ on: vi.fn(), kill: vi.fn() })),
+}));
+```
+
+## 文件组织
+
+```
+src/
+├── core/           # 核心逻辑（Dispatcher, TaskManager）
+├── cdp/            # CDP 相关（Injector, ChatFiller, RalphLoop）
+├── lark/           # 飞书相关（Terminal, Notifier, BitableSync）
+├── git/            # Git 相关（Manager, AutoCommit）
+├── config/         # 配置（Loader, Schema）
+├── utils/          # 工具（Logger, Mutex, Metrics）
+└── vscode/         # VS Code 插件
+```
+
+## 关键设计决策
+
+1. **跨实例并行 + 实例内串行**: ChatMutex 确保同一 Trae 实例的 Chat 发送串行化
+2. **P0-P5 降级匹配**: UIRecognizer 通过多策略匹配应对 Trae 版本更新
+3. **三级 Chat 填充降级**: execCommand → Lexical 操作 → 剪贴板
+4. **规则热加载**: AI 每次 Ralph Loop 唤醒时重新加载 .trae/rules/
+
+## 参考文档
+
+- PRD: `trae-agent-team-prd.md`
+- DoD: `docs/DO_AND_TESTING_SPEC.md`
+- CDP Mock: `docs/CDP_MOCK_STRATEGY.md`
