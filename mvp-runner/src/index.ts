@@ -1,7 +1,7 @@
 import debug from 'debug';
 import { loadConfig } from './config.js';
 import { CDPClient } from './cdp/client.js';
-import { SelectorResolver } from './selectors/resolver.js';
+import { SelectorResolver } from './selectors/resolver-class.js';
 import { LarkBot } from './lark/client.js';
 import { LarkRunner } from './runner-lark.js';
 

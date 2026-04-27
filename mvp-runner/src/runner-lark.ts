@@ -2,7 +2,7 @@ import debug from 'debug';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { CDPClient } from './cdp/client.js';
-import type { SelectorResolver } from './selectors/resolver.js';
+import type { SelectorResolver } from './selectors/resolver-class.js';
 import { switchTask } from './actions/switch-task.js';
 import { fillPrompt } from './actions/fill-prompt.js';
 import { submit } from './actions/submit.js';
