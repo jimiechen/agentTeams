@@ -7,3 +7,6 @@ response_max_chars: 2000   # 回贴飞书时的截断长度
 response_timeout_ms: 90000 # waitResponse 超时（毫秒）
 ack_on_receive: true       # 收到指令立即 ACK 给用户
 online_notice: true        # 启动时向群里发上线通知
+
+# 工作空间配置
+workspaces_base_dir: "../workspaces"  # 工作空间基础目录（相对于 mvp-runner）

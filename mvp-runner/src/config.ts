@@ -10,6 +10,7 @@ export interface PmbotConfig {
   response_timeout_ms: number;
   ack_on_receive: boolean;
   online_notice: boolean;
+  workspaces_base_dir: string;
 }
 
 export interface AppConfig {
@@ -45,6 +46,7 @@ export function loadConfig(configPath = './config/pmbot.yaml'): AppConfig {
   pmbot.response_timeout_ms ??= 90_000;
   pmbot.ack_on_receive ??= true;
   pmbot.online_notice ??= true;
+  pmbot.workspaces_base_dir ??= '../workspaces';
 
   return {
     lark: {

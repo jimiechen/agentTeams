@@ -17,9 +17,6 @@ import { findWorkspaceByMention } from './workspace/loader.js';
 
 const log = debug('mvp:runner-multi');
 
-// 工作空间基础目录（使用绝对路径）
-const WORKSPACES_BASE_DIR = path.resolve('d:\\TraeProject\\agentTeams\\workspaces');
-
 export class MultiTaskRunner {
   private runsDir: string;
 
@@ -220,7 +217,8 @@ export class MultiTaskRunner {
     senderId: string,
     actualSlot: number,
   ): void {
-    const workspaceDir = path.join(WORKSPACES_BASE_DIR, taskName);
+    const workspacesBaseDir = path.resolve(this.cfg.pmbot.workspaces_base_dir);
+    const workspaceDir = path.join(workspacesBaseDir, taskName);
     const runsDir = path.join(workspaceDir, 'runs');
 
     try {
