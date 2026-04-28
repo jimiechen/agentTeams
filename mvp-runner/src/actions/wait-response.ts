@@ -108,7 +108,7 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
 
 /**
  * 终止当前会话
- * 点击"终止会话"或"停止生成"按钮
+ * 点击"停止生成"按钮（发送按钮在AI生成时会变成停止按钮）
  */
 async function terminateSession(cdp: CDPClient): Promise<{ success: boolean; reason: string }> {
   debug('Attempting to terminate session...');
@@ -117,9 +117,38 @@ async function terminateSession(cdp: CDPClient): Promise<{ success: boolean; rea
     success: boolean;
     reason: string;
     buttonFound: string;
+    iconClass: string;
   }>(`
     (function() {
-      // 尝试多种可能的终止按钮选择器
+      // 1. 首先尝试发送按钮（它在AI生成时会变成停止按钮）
+      const sendButton = document.querySelector('.chat-input-v2-send-button');
+      if (sendButton) {
+        // 检查当前图标
+        const icon = sendButton.querySelector('span');
+        const iconClass = icon ? icon.className : '';
+        
+        // 如果是停止图标（stop-circle），点击终止
+        if (iconClass.includes('stop') || iconClass.includes('Stop')) {
+          try {
+            sendButton.click();
+            return {
+              success: true,
+              reason: '停止按钮已点击',
+              buttonFound: '.chat-input-v2-send-button (stop mode)',
+              iconClass: iconClass
+            };
+          } catch (err) {
+            return {
+              success: false,
+              reason: '点击停止按钮失败: ' + err.message,
+              buttonFound: '.chat-input-v2-send-button',
+              iconClass: iconClass
+            };
+          }
+        }
+      }
+      
+      // 2. 尝试其他停止按钮选择器
       const stopButtonSelectors = [
         'button[title="停止生成"]',
         'button[aria-label="停止生成"]',
@@ -139,46 +168,42 @@ async function terminateSession(cdp: CDPClient): Promise<{ success: boolean; rea
         '[class*="toolbar"] button'
       ];
       
-      let foundButton = null;
-      let foundSelector = '';
-      
       for (const selector of stopButtonSelectors) {
         const btn = document.querySelector(selector);
         if (btn) {
-          foundButton = btn;
-          foundSelector = selector;
-          break;
+          try {
+            btn.click();
+            return {
+              success: true,
+              reason: '按钮已点击',
+              buttonFound: selector,
+              iconClass: ''
+            };
+          } catch (err) {
+            return {
+              success: false,
+              reason: '点击按钮失败: ' + err.message,
+              buttonFound: selector,
+              iconClass: ''
+            };
+          }
         }
       }
       
-      if (!foundButton) {
-        return {
-          success: false,
-          reason: '未找到终止/停止按钮',
-          buttonFound: ''
-        };
-      }
-      
-      // 点击按钮
-      try {
-        foundButton.click();
-        return {
-          success: true,
-          reason: '按钮已点击',
-          buttonFound: foundSelector
-        };
-      } catch (err) {
-        return {
-          success: false,
-          reason: '点击按钮失败: ' + err.message,
-          buttonFound: foundSelector
-        };
-      }
+      // 未找到任何停止按钮
+      const sendBtnIcon = sendButton ? (sendButton.querySelector('span')?.className || 'no-icon') : 'no-button';
+      return {
+        success: false,
+        reason: '未找到停止按钮（发送按钮当前不是停止模式）',
+        buttonFound: '',
+        iconClass: sendBtnIcon
+      };
     })()
   `);
   
   if (result) {
-    debug('Terminate result: success=%s, reason=%s, button=%s', result.success, result.reason, result.buttonFound);
+    debug('Terminate result: success=%s, reason=%s, button=%s, icon=%s', 
+      result.success, result.reason, result.buttonFound, result.iconClass);
     return { success: result.success, reason: result.reason };
   }
   
