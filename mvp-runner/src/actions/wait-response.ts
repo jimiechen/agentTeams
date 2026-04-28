@@ -123,12 +123,18 @@ async function terminateSession(cdp: CDPClient): Promise<{ success: boolean; rea
       // 1. 首先尝试发送按钮（它在AI生成时会变成停止按钮）
       const sendButton = document.querySelector('.chat-input-v2-send-button');
       if (sendButton) {
-        // 检查当前图标
-        const icon = sendButton.querySelector('span');
+        // 检查当前图标（使用 .codicon 类，参考 button-controller.js）
+        const icon = sendButton.querySelector('.codicon');
         const iconClass = icon ? icon.className : '';
         
-        // 如果是停止图标（stop-circle），点击终止
-        if (iconClass.includes('stop') || iconClass.includes('Stop')) {
+        // 判断当前功能
+        let function_ = 'unknown';
+        if (iconClass.includes('ArrowUp')) function_ = 'send';
+        else if (iconClass.includes('stop') || iconClass.includes('Stop')) function_ = 'stop';
+        else if (sendButton.disabled) function_ = 'disabled';
+        
+        // 如果是停止图标，点击终止
+        if (function_ === 'stop') {
           try {
             sendButton.click();
             return {
@@ -191,10 +197,10 @@ async function terminateSession(cdp: CDPClient): Promise<{ success: boolean; rea
       }
       
       // 未找到任何停止按钮
-      const sendBtnIcon = sendButton ? (sendButton.querySelector('span')?.className || 'no-icon') : 'no-button';
+      const sendBtnIcon = sendButton ? (sendButton.querySelector('.codicon')?.className || 'no-icon') : 'no-button';
       return {
         success: false,
-        reason: '未找到停止按钮（发送按钮当前不是停止模式）',
+        reason: '未找到停止按钮（发送按钮当前不是停止模式，图标: ' + sendBtnIcon + '）',
         buttonFound: '',
         iconClass: sendBtnIcon
       };
