@@ -4,7 +4,7 @@ mention_keyword: PMCLI
 allowed_users: []          # 空数组表示不限制；填 open_id 列表则启用白名单
 default_slot: 0            # 未指定 #slot 时的默认槽位
 response_max_chars: 2000   # 回贴飞书时的截断长度
-response_timeout_ms: 90000 # waitResponse 超时（毫秒）
+response_timeout_ms: 300000 # waitResponse 超时（毫秒），默认5分钟
 ack_on_receive: true       # 收到指令立即 ACK 给用户
 online_notice: true        # 启动时向群里发上线通知
 
