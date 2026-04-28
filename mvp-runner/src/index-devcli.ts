@@ -6,7 +6,7 @@ import debug from 'debug';
 import { loadConfig } from './config.js';
 import { CDPClient } from './cdp/client.js';
 import { LarkBot } from './lark/client.js';
-import { LarkRunner } from './runner-lark.js';
+import { MultiTaskRunner } from './runner-multi.js';
 
 const log = debug('mvp:boot:devcli');
 
@@ -17,11 +17,11 @@ async function main() {
     cfg.lark.chatId, cfg.lark.mentionKeyword, cfg.cdp.host, cfg.cdp.port);
 
   // 2. 连接 CDP
-  const cdp = new CDPClient(cfg.cdp.host, cfg.cdp.port);
+  const cdp = new CDPClient({ host: cfg.cdp.host, port: cfg.cdp.port });
   await cdp.connect();
   log('✅ CDP connected');
 
-  // 4. 飞书 Bot
+  // 3. 飞书 Bot
   const bot = new LarkBot({
     appId: cfg.lark.appId,
     appSecret: cfg.lark.appSecret,
@@ -29,8 +29,19 @@ async function main() {
     mentionKeyword: cfg.lark.mentionKeyword,
   });
 
-  // 5. 组装 runner 并注册 handler
-  const runner = new LarkRunner(cfg, cdp, bot);
+  // 4. 创建 Runner（使用 MultiTaskRunner 但只传一个 workspace）
+  const workspace = {
+    name: 'DEVCLI',
+    larkAppId: cfg.lark.appId,
+    larkAppSecret: cfg.lark.appSecret,
+    chatId: cfg.lark.chatId,
+    mentionKeyword: cfg.lark.mentionKeyword,
+    slot: 0,
+    taskName: 'DEVCLI',
+  };
+  const runner = new MultiTaskRunner(cfg, cdp, [bot], [workspace]);
+  
+  // 5. 启动 Bot
   await bot.start(runner.handle);
   log('✅ Lark WS listening');
 
@@ -40,7 +51,7 @@ async function main() {
       await bot.sendText(
         `🟢 DEVCLI Runner 上线\n` +
         `关键字: @${cfg.lark.mentionKeyword}\n` +
-        `用法: @${cfg.lark.mentionKeyword} [#slot] <prompt>`,
+        `用法: @${cfg.lark.mentionKeyword} <prompt>`,
       );
     } catch (err) {
       log('send online notice failed: %s', (err as Error).message);

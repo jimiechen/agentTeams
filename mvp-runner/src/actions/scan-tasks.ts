@@ -56,8 +56,8 @@ export async function scanTasks(cdp: CDPClient): Promise<TaskInfo[]> {
     })()
   `);
   
-  const tasks = result || [];
-  debug(`Found ${tasks.length} tasks: ${tasks.map(t => `${t.name}(${t.status})`).join(', ')}`);
+  const tasks: TaskInfo[] = result || [];
+  debug(`Found ${tasks.length} tasks: ${tasks.map((t: TaskInfo) => `${t.name}(${t.status})`).join(', ')}`);
   
   return tasks;
 }

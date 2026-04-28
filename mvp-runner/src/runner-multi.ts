@@ -17,8 +17,8 @@ import { findWorkspaceByMention } from './workspace/loader.js';
 
 const log = debug('mvp:runner-multi');
 
-// 工作空间基础目录
-const WORKSPACES_BASE_DIR = path.resolve('..', 'workspaces');
+// 工作空间基础目录（使用绝对路径）
+const WORKSPACES_BASE_DIR = path.resolve('d:\\TraeProject\\agentTeams\\workspaces');
 
 export class MultiTaskRunner {
   private runsDir: string;
@@ -171,7 +171,7 @@ export class MultiTaskRunner {
             await this.replyByKeyword(botKeyword, msg.messageId, `🤖 ${taskDisplay} 响应:\n${body.slice(0, 1000)}`);
             log('[%s] fallback reply sent', runId);
           } catch (fallbackErr) {
-            log('[%s] fallback reply also failed: %s', runId, (err as Error).message);
+            log('[%s] fallback reply also failed: %s', runId, (fallbackErr as Error).message);
           }
         }
 

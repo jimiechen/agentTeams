@@ -29,7 +29,6 @@ export async function submit(cdp: CDPClient): Promise<void> {
     type: 'keyDown',
     key: 'Enter',
     code: 'Enter',
-    keyCode: 13,
     windowsVirtualKeyCode: 13,
     nativeVirtualKeyCode: 13,
   });
@@ -40,7 +39,6 @@ export async function submit(cdp: CDPClient): Promise<void> {
     type: 'keyUp',
     key: 'Enter',
     code: 'Enter',
-    keyCode: 13,
     windowsVirtualKeyCode: 13,
     nativeVirtualKeyCode: 13,
   });

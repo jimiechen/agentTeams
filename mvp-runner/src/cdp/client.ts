@@ -145,9 +145,9 @@ export class CDPClient {
     debug('CDP disconnected');
   }
 
-  async evaluate(expression: string, returnByValue = true): Promise<any> {
+  async evaluate<T = any>(expression: string, returnByValue = true): Promise<T> {
     if (!this.client) throw new ConnectionError('Not connected');
     const { result } = await this.Runtime.evaluate({ expression, returnByValue });
-    return result.value;
+    return result.value as T;
   }
 }
