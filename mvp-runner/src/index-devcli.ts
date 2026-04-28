@@ -1,12 +1,12 @@
+// 必须在任何其他导入之前加载 DEVCLI 环境变量
 import { config } from 'dotenv';
+config({ path: '.env.devcli' });
+
 import debug from 'debug';
 import { loadConfig } from './config.js';
 import { CDPClient } from './cdp/client.js';
 import { LarkBot } from './lark/client.js';
 import { LarkRunner } from './runner-lark.js';
-
-// 加载 DEVCLI 环境变量
-config({ path: '.env.devcli' });
 
 const log = debug('mvp:boot:devcli');
 
@@ -38,10 +38,8 @@ async function main() {
   if (cfg.pmbot.online_notice) {
     try {
       await bot.sendText(
-        `🟢 DEVCLI Runner 上线
-` +
-        `关键字: @${cfg.lark.mentionKeyword}
-` +
+        `🟢 DEVCLI Runner 上线\n` +
+        `关键字: @${cfg.lark.mentionKeyword}\n` +
         `用法: @${cfg.lark.mentionKeyword} [#slot] <prompt>`,
       );
     } catch (err) {
