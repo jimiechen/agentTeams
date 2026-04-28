@@ -1,21 +1,29 @@
 // src/actions/wait-response.ts - 等待 AI 响应完成并解析内容
-// 通过心跳检查侧边栏任务状态，任务完成后解析结果
+// 基于 v2026-04-28 方案，集成5信号采集和三类失败恢复
 
 import createDebug from 'debug';
 import { CDPClient } from '../cdp/client.js';
 import { ResponseTimeoutError } from '../errors.js';
+import { captureSnapshot, isModelStalled, isTaskCompleted, detectBlocking, SystemSnapshot } from './state-probe.js';
+import { recoverTerminalHang, recoverDeleteModal, recoverOverwriteModal, recoverModelStalled } from './recover.js';
 
 const debug = createDebug('mvp:action:wait');
 
 export interface WaitResponseOptions {
-  timeoutMs?: number;    // 默认 120000
-  pollMs?: number;       // 心跳间隔，默认 2000
-  taskName?: string;     // 要检查的任务名称，默认 PMCLI
+  timeoutMs?: number;       // 默认 300000 (5分钟)
+  pollMs?: number;          // 心跳间隔，默认 2000
+  taskName?: string;        // 要检查的任务名称，默认 PMCLI
+  recoveryPolicy?: {
+    terminalAction: 'background' | 'cancel';
+    deleteAction: 'keep' | 'delete';
+    overwriteAction: 'keep' | 'overwrite';
+    maxModelRetries: number;
+  };
 }
 
 export interface TaskResult {
-  text: string;          // 纯文本内容
-  html: string;          // HTML内容
+  text: string;
+  html: string;
   hasCodeBlock: boolean;
   hasImage: boolean;
   hasFile: boolean;
@@ -26,38 +34,93 @@ export interface TaskResult {
 
 /**
  * 等待 AI 响应完成并解析内容
- * 通过心跳检查侧边栏任务状态，任务完成后才解析结果
- * 如果超时，会尝试终止会话并返回错误信息
+ * v2026-04-28: 集成5信号采集和三类失败恢复
  */
 export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): Promise<string> {
-  const timeoutMs = opts?.timeoutMs ?? 120000;
+  const timeoutMs = opts?.timeoutMs ?? 300000;  // 5分钟
   const pollMs = opts?.pollMs ?? 2000;
   const taskName = opts?.taskName ?? 'PMCLI';
+  const policy = opts?.recoveryPolicy ?? {
+    terminalAction: 'background',
+    deleteAction: 'keep',
+    overwriteAction: 'keep',
+    maxModelRetries: 1,
+  };
 
   const startTime = Date.now();
   debug(`Starting heartbeat check for task "${taskName}" (timeout=${timeoutMs}ms, poll=${pollMs}ms)`);
 
+  const snapshots: SystemSnapshot[] = [];
   let checkCount = 0;
-  let lastStatus = '';
+  let modelRetryCount = 0;
 
-  // 心跳循环：定时检查任务状态
+  // 心跳循环
   while (Date.now() - startTime < timeoutMs) {
     checkCount++;
-    
-    const status = await checkTaskStatus(cdp, taskName);
-    debug(`Heartbeat #${checkCount}: task="${taskName}", status=${status.status} (${status.reason})`);
-    
-    // 记录状态变化
-    if (status.status !== lastStatus) {
-      debug(`Status changed: ${lastStatus} -> ${status.status}`);
-      lastStatus = status.status;
+
+    // 采集5信号快照
+    const snap = await captureSnapshot(cdp);
+    snapshots.push(snap);
+
+    // 保留最近100个快照（防止内存无限增长）
+    if (snapshots.length > 100) {
+      snapshots.shift();
     }
 
-    // 任务完成（completed 或 interrupted）
-    if (status.status === 'completed' || status.status === 'interrupted') {
+    debug(`Heartbeat #${checkCount}: btn=${snap.btnFunction}, task=${snap.taskStatus}, terminal=${snap.hasTerminalBtn}, delete=${snap.hasDeleteCard}`);
+
+    // ========== 优先级1: 检测阻塞性弹窗（最高优先级）==========
+    const blocking = detectBlocking(snapshots);
+    if (blocking.type === 'delete_modal') {
+      debug('Delete modal detected, recovering...');
+      const result = await recoverDeleteModal(cdp, policy.deleteAction);
+      debug('Delete modal recovery: %o', result);
+      if (result.success) {
+        continue;  // 恢复后继续心跳
+      }
+    } else if (blocking.type === 'overwrite_modal') {
+      debug('Overwrite modal detected, recovering...');
+      const result = await recoverOverwriteModal(cdp, policy.overwriteAction);
+      debug('Overwrite modal recovery: %o', result);
+      if (result.success) {
+        continue;
+      }
+    } else if (blocking.type === 'terminal_hang') {
+      // 终端超时按钮出现超过5秒才处理
+      const terminalFirstSeen = findFirstTerminalBtnTime(snapshots);
+      if (terminalFirstSeen && Date.now() - terminalFirstSeen > 5000) {
+        debug('Terminal hang detected (>5s), recovering...');
+        const result = await recoverTerminalHang(cdp, policy.terminalAction);
+        debug('Terminal hang recovery: %o', result);
+        if (result.success) {
+          continue;
+        }
+      }
+    }
+
+    // ========== 优先级2: 检测任务完成 ==========
+    if (isTaskCompleted(snapshots)) {
       const elapsed = Date.now() - startTime;
-      debug(`Task ${status.status} after ${elapsed}ms (checked ${checkCount} times)`);
+      debug(`Task completed after ${elapsed}ms (checked ${checkCount} times)`);
       break;
+    }
+
+    // ========== 优先级3: 检测模型停滞并恢复 ==========
+    if (isModelStalled(snapshots, 30000)) {
+      if (modelRetryCount < policy.maxModelRetries) {
+        modelRetryCount++;
+        debug(`Model stalled detected, retry ${modelRetryCount}/${policy.maxModelRetries}...`);
+        const result = await recoverModelStalled(cdp);
+        debug('Model stalled recovery: %o', result);
+        if (result.success) {
+          // 清空快照窗口，重新检测
+          snapshots.length = 0;
+          continue;
+        }
+      } else {
+        debug('Max model retries reached');
+        throw new Error(`[模型停滞] 任务 "${taskName}" 模型无响应超过30秒，已达最大重试次数(${policy.maxModelRetries})，请检查网络或稍后重试。`);
+      }
     }
 
     // 等待下一次心跳
@@ -67,37 +130,23 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
   // 检查是否超时
   if (Date.now() - startTime >= timeoutMs) {
     const elapsed = Date.now() - startTime;
-    debug(`Heartbeat timeout after ${elapsed}ms, attempting to terminate session`);
-    
-    // 尝试终止会话
-    const terminateResult = await terminateSession(cdp);
-    
-    if (terminateResult.success) {
-      debug('Session terminated successfully');
-      throw new Error(`[任务超时] 任务 "${taskName}" 在 ${Math.round(elapsed/1000)} 秒内未完成，已自动终止会话。请重新发送指令。`);
-    } else {
-      debug('Failed to terminate session: %s', terminateResult.reason);
-      throw new Error(`[任务超时] 任务 "${taskName}" 在 ${Math.round(elapsed/1000)} 秒内未完成，终止会话失败: ${terminateResult.reason}。请手动检查。`);
-    }
+    debug(`Timeout after ${elapsed}ms`);
+    throw new Error(`[任务超时] 任务 "${taskName}" 在 ${Math.round(elapsed / 1000)} 秒内未完成，已超时。请检查任务状态或稍后重试。`);
   }
 
   // 任务完成后，解析最终结果
   debug('Task completed, parsing result...');
-  
-  // 等待一小段时间确保内容已渲染
-  await sleep(500);
-  
+  await sleep(500);  // 等待内容渲染
+
   const result = await getLastAIResponse(cdp);
-  
   if (result && result.length > 0) {
     debug(`Result parsed: ${result.length} chars`);
     return result;
   }
 
-  // 如果解析失败，再等待一下重试
+  // 重试一次
   await sleep(1000);
   const retryResult = await getLastAIResponse(cdp);
-  
   if (retryResult && retryResult.length > 0) {
     debug(`Result parsed on retry: ${retryResult.length} chars`);
     return retryResult;
@@ -107,190 +156,15 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
 }
 
 /**
- * 终止当前会话
- * 点击"停止生成"按钮（发送按钮在AI生成时会变成停止按钮）
+ * 查找终端按钮首次出现的时间
  */
-async function terminateSession(cdp: CDPClient): Promise<{ success: boolean; reason: string }> {
-  debug('Attempting to terminate session...');
-  
-  const result = await cdp.evaluate<{
-    success: boolean;
-    reason: string;
-    buttonFound: string;
-    iconClass: string;
-  }>(`
-    (function() {
-      // 1. 首先尝试发送按钮（它在AI生成时会变成停止按钮）
-      const sendButton = document.querySelector('.chat-input-v2-send-button');
-      if (sendButton) {
-        // 检查当前图标（使用 .codicon 类，参考 button-controller.js）
-        const icon = sendButton.querySelector('.codicon');
-        const iconClass = icon ? icon.className : '';
-        
-        // 判断当前功能
-        let function_ = 'unknown';
-        if (iconClass.includes('ArrowUp')) function_ = 'send';
-        else if (iconClass.includes('stop') || iconClass.includes('Stop')) function_ = 'stop';
-        else if (sendButton.disabled) function_ = 'disabled';
-        
-        // 如果是停止图标，点击终止
-        if (function_ === 'stop') {
-          try {
-            sendButton.click();
-            return {
-              success: true,
-              reason: '停止按钮已点击',
-              buttonFound: '.chat-input-v2-send-button (stop mode)',
-              iconClass: iconClass
-            };
-          } catch (err) {
-            return {
-              success: false,
-              reason: '点击停止按钮失败: ' + err.message,
-              buttonFound: '.chat-input-v2-send-button',
-              iconClass: iconClass
-            };
-          }
-        }
-      }
-      
-      // 2. 尝试其他停止按钮选择器
-      const stopButtonSelectors = [
-        'button[title="停止生成"]',
-        'button[aria-label="停止生成"]',
-        'button i.codicon-debug-stop',
-        '[class*="stop"] button',
-        'button[class*="stop"]',
-        '[data-action="stop"]',
-        // 终止会话按钮
-        'button[title="终止会话"]',
-        'button[aria-label="终止会话"]',
-        '[class*="terminate"] button',
-        'button[class*="terminate"]',
-        '[data-action="terminate"]',
-        // 通用停止按钮
-        '.chat-toolbar button',
-        '.action-bar button',
-        '[class*="toolbar"] button'
-      ];
-      
-      for (const selector of stopButtonSelectors) {
-        const btn = document.querySelector(selector);
-        if (btn) {
-          try {
-            btn.click();
-            return {
-              success: true,
-              reason: '按钮已点击',
-              buttonFound: selector,
-              iconClass: ''
-            };
-          } catch (err) {
-            return {
-              success: false,
-              reason: '点击按钮失败: ' + err.message,
-              buttonFound: selector,
-              iconClass: ''
-            };
-          }
-        }
-      }
-      
-      // 未找到任何停止按钮
-      const sendBtnIcon = sendButton ? (sendButton.querySelector('.codicon')?.className || 'no-icon') : 'no-button';
-      return {
-        success: false,
-        reason: '未找到停止按钮（发送按钮当前不是停止模式，图标: ' + sendBtnIcon + '）',
-        buttonFound: '',
-        iconClass: sendBtnIcon
-      };
-    })()
-  `);
-  
-  if (result) {
-    debug('Terminate result: success=%s, reason=%s, button=%s, icon=%s', 
-      result.success, result.reason, result.buttonFound, result.iconClass);
-    return { success: result.success, reason: result.reason };
+function findFirstTerminalBtnTime(snapshots: SystemSnapshot[]): number | null {
+  for (const snap of snapshots) {
+    if (snap.hasTerminalBtn) {
+      return snap.timestamp;
+    }
   }
-  
-  return { success: false, reason: 'CDP执行失败' };
-}
-
-/**
- * 检查指定任务的状态
- * 通过侧边栏任务列表的文本和图标判断
- */
-async function checkTaskStatus(cdp: CDPClient, taskName: string): Promise<{
-  status: 'unknown' | 'in_progress' | 'completed' | 'interrupted';
-  text: string;
-  reason: string;
-}> {
-  const result = await cdp.evaluate<{
-    status: 'unknown' | 'in_progress' | 'completed' | 'interrupted';
-    text: string;
-    reason: string;
-  }>(`
-    (function() {
-      // 获取所有任务项
-      const items = document.querySelectorAll('.index-module__task-item___zOpfg');
-      
-      // 查找指定名称的任务
-      let targetTask = null;
-      for (const item of items) {
-        const text = item.textContent || '';
-        if (text.includes('` + taskName + `')) {
-          targetTask = item;
-          break;
-        }
-      }
-      
-      if (!targetTask) {
-        return { 
-          status: 'unknown', 
-          text: '', 
-          reason: 'task-not-found' 
-        };
-      }
-      
-      const text = targetTask.textContent || '';
-      
-      // 方法1: 通过文本内容判断状态
-      let status = 'unknown';
-      if (text.includes('完成')) {
-        status = 'completed';
-      } else if (text.includes('进行中')) {
-        status = 'in_progress';
-      } else if (text.includes('中断')) {
-        status = 'interrupted';
-      }
-      
-      // 方法2: 通过完成图标验证（如果文本判断为完成）
-      if (status === 'completed') {
-        const hasCompleteIcon = targetTask.querySelector('.index-module__task-status__complete___ThOzg') !== null;
-        if (!hasCompleteIcon) {
-          // 文本说完成但没有图标，可能是误判
-          status = 'in_progress';
-        }
-      }
-      
-      // 构建 reason 字符串（避免模板字符串嵌套问题）
-      let reasonStr = 'cannot-determine-status';
-      if (status !== 'unknown') {
-        reasonStr = 'detected-by-text';
-        if (status === 'completed') {
-          reasonStr = reasonStr + '-and-icon';
-        }
-      }
-      
-      return {
-        status: status,
-        text: text.slice(0, 100),
-        reason: reasonStr
-      };
-    })()
-  `);
-  
-  return result || { status: 'unknown', text: '', reason: 'eval-failed' };
+  return null;
 }
 
 /**
@@ -302,14 +176,10 @@ async function getLastAIResponse(cdp: CDPClient): Promise<string> {
       const turns = document.querySelectorAll('.chat-turn');
       if (turns.length === 0) return '';
       
-      // 从后往前找，找到最后一个 AI 消息（不包含 user class）
       for (let i = turns.length - 1; i >= 0; i--) {
         const turn = turns[i];
-        const isUserMsg = turn.classList.contains('user');
-        
-        if (!isUserMsg) {
+        if (!turn.classList.contains('user')) {
           let text = turn.innerText || '';
-          // 移除菜单文本
           text = text.replace(/复制图片/g, '').trim();
           return text;
         }
@@ -323,7 +193,7 @@ async function getLastAIResponse(cdp: CDPClient): Promise<string> {
 }
 
 /**
- * 获取详细的任务结果（包含代码块、图片等）
+ * 获取详细的任务结果
  */
 export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
   const result: TaskResult = {
@@ -405,7 +275,6 @@ export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
         result.hasImage = result.images.length > 0;
       }
     }
-
   } catch (err) {
     debug('Parse error: %s', (err as Error).message);
   }
