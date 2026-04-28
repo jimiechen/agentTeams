@@ -127,8 +127,9 @@ export class LarkRunner {
         this.persist(runId, parsed, response, duration, msg.senderId, targetTaskName, targetSlot);
 
         const maxChars = this.cfg.pmbot.response_max_chars;
+        const taskDirName = targetTaskName || 'unknown';
         const body = response.length > maxChars
-          ? response.slice(0, maxChars) + `\n\n… (truncated, full ${response.length} chars saved to runs/${runId}.md)`
+          ? response.slice(0, maxChars) + `\n\n… (truncated, full ${response.length} chars saved to runs/${taskDirName}/${runId}.md)`
           : response;
 
         // 发送结果到群聊
@@ -211,7 +212,8 @@ export class LarkRunner {
   }
 
   /**
-   * 保存到默认runs目录
+   * 保存到runs目录（按任务分子目录）
+   * 例如：runs/PMCLI/2026-04-27Txxxxx.md
    */
   private persist(
     runId: string,
@@ -222,11 +224,17 @@ export class LarkRunner {
     taskName?: string,
     actualSlot?: number,
   ): void {
-    const file = path.join(this.runsDir, `${runId}.md`);
+    const task = taskName || 'unknown';
+    const taskDir = path.join(this.runsDir, task);
+    
+    // 创建任务子目录
+    mkdirSync(taskDir, { recursive: true });
+    
+    const file = path.join(taskDir, `${runId}.md`);
     const md = [
       `# Run ${runId}`,
       ``,
-      `- **Task**: ${taskName || 'unknown'}`,
+      `- **Task**: ${task}`,
       `- **Slot**: ${actualSlot !== undefined ? actualSlot : parsed.slot}`,
       `- **Sender**: ${senderId}`,
       `- **Duration**: ${durationMs} ms`,
