@@ -27,6 +27,7 @@ export interface TaskResult {
 /**
  * 等待 AI 响应完成并解析内容
  * 通过心跳检查侧边栏任务状态，任务完成后才解析结果
+ * 如果超时，会尝试终止会话并返回错误信息
  */
 export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): Promise<string> {
   const timeoutMs = opts?.timeoutMs ?? 120000;
@@ -65,13 +66,19 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
 
   // 检查是否超时
   if (Date.now() - startTime >= timeoutMs) {
-    debug('Heartbeat timeout, trying to get partial response');
-    const partialResult = await getLastAIResponse(cdp);
-    if (partialResult && partialResult.length > 0) {
-      debug(`Returning partial response (${partialResult.length} chars)`);
-      return partialResult;
+    const elapsed = Date.now() - startTime;
+    debug(`Heartbeat timeout after ${elapsed}ms, attempting to terminate session`);
+    
+    // 尝试终止会话
+    const terminateResult = await terminateSession(cdp);
+    
+    if (terminateResult.success) {
+      debug('Session terminated successfully');
+      throw new Error(`[任务超时] 任务 "${taskName}" 在 ${Math.round(elapsed/1000)} 秒内未完成，已自动终止会话。请重新发送指令。`);
+    } else {
+      debug('Failed to terminate session: %s', terminateResult.reason);
+      throw new Error(`[任务超时] 任务 "${taskName}" 在 ${Math.round(elapsed/1000)} 秒内未完成，终止会话失败: ${terminateResult.reason}。请手动检查。`);
     }
-    throw new ResponseTimeoutError(timeoutMs);
   }
 
   // 任务完成后，解析最终结果
@@ -97,6 +104,85 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
   }
 
   throw new ResponseTimeoutError(timeoutMs);
+}
+
+/**
+ * 终止当前会话
+ * 点击"终止会话"或"停止生成"按钮
+ */
+async function terminateSession(cdp: CDPClient): Promise<{ success: boolean; reason: string }> {
+  debug('Attempting to terminate session...');
+  
+  const result = await cdp.evaluate<{
+    success: boolean;
+    reason: string;
+    buttonFound: string;
+  }>(`
+    (function() {
+      // 尝试多种可能的终止按钮选择器
+      const stopButtonSelectors = [
+        'button[title="停止生成"]',
+        'button[aria-label="停止生成"]',
+        'button i.codicon-debug-stop',
+        '[class*="stop"] button',
+        'button[class*="stop"]',
+        '[data-action="stop"]',
+        // 终止会话按钮
+        'button[title="终止会话"]',
+        'button[aria-label="终止会话"]',
+        '[class*="terminate"] button',
+        'button[class*="terminate"]',
+        '[data-action="terminate"]',
+        // 通用停止按钮
+        '.chat-toolbar button',
+        '.action-bar button',
+        '[class*="toolbar"] button'
+      ];
+      
+      let foundButton = null;
+      let foundSelector = '';
+      
+      for (const selector of stopButtonSelectors) {
+        const btn = document.querySelector(selector);
+        if (btn) {
+          foundButton = btn;
+          foundSelector = selector;
+          break;
+        }
+      }
+      
+      if (!foundButton) {
+        return {
+          success: false,
+          reason: '未找到终止/停止按钮',
+          buttonFound: ''
+        };
+      }
+      
+      // 点击按钮
+      try {
+        foundButton.click();
+        return {
+          success: true,
+          reason: '按钮已点击',
+          buttonFound: foundSelector
+        };
+      } catch (err) {
+        return {
+          success: false,
+          reason: '点击按钮失败: ' + err.message,
+          buttonFound: foundSelector
+        };
+      }
+    })()
+  `);
+  
+  if (result) {
+    debug('Terminate result: success=%s, reason=%s, button=%s', result.success, result.reason, result.buttonFound);
+    return { success: result.success, reason: result.reason };
+  }
+  
+  return { success: false, reason: 'CDP执行失败' };
 }
 
 /**
