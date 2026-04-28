@@ -1,5 +1,5 @@
 /**
- * Wiki Scheduler - 统一调度入口
+ * Wiki Scheduler CLI
  * 用法: npx tsx scripts/wiki-scheduler.ts [distill|merge|all]
  */
 
@@ -9,56 +9,25 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 
-import { execute as distill } from '../src/skills/wiki-distill.js';
-import { execute as merge }   from '../src/skills/wiki-merge.js';
-import { invalidateCache }    from '../src/skills/wiki-inject.js';
+import {
+  runScheduledDistill,
+  runScheduledMerge,
+  type SchedulerConfig,
+} from '../src/skills/wiki-scheduler.js';
 
-const WORKSPACES = [
-  path.resolve(ROOT, 'workspaces/PMCLI'),
-  path.resolve(ROOT, 'workspaces/DEVCLI'),
-];
+const config: SchedulerConfig = {
+  workspaces: ['PMCLI', 'DEVCLI'],
+  distillSchedule: '0 4 * * *',
+  mergeSchedule: '0 3 * * 0',
+  retryDelayMinutes: 15,
+  maxRetries: 3,
+  alertThreshold: 3,
+  larkNotify: {
+    enabled: true,
+  },
+};
 
-async function runDistill(): Promise<void> {
-  console.log('\n=== [wiki-scheduler] 开始每日蒸馏 ===\n');
-  for (const ws of WORKSPACES) {
-    const wsName = path.basename(ws);
-    console.log(`\n-- 工作区: ${wsName}`);
-    const result = await distill({
-      params: { workspacePath: ws },
-      env: {},
-    });
-    console.log(
-      result.success
-        ? `✅ 蒸馏完成 | 压缩比: ${result.compressionRatio}:1 | 质量: ${result.quality} | 文件: ${result.fileCount}条`
-        : `❌ 蒸馏失败: ${result.error}`
-    );
-    if (result.success) {
-      invalidateCache(ws);
-    }
-  }
-}
-
-async function runMerge(): Promise<void> {
-  console.log('\n=== [wiki-scheduler] 开始每周合并 ===\n');
-  for (const ws of WORKSPACES) {
-    const wsName = path.basename(ws);
-    console.log(`\n-- 工作区: ${wsName}`);
-    const result = await merge({
-      params: { workspacePath: ws },
-      env: {},
-    });
-    console.log(
-      result.success
-        ? `✅ 合并完成 | 条目数: ${result.itemsCount} | ${result.previousCoreChars}字 → ${result.newCoreChars}字`
-        : `❌ 合并失败: ${result.error}`
-    );
-    if (result.success) {
-      invalidateCache(ws);
-    }
-  }
-}
-
-async function main(): Promise<void> {
+async function main() {
   const mode = process.argv[2] ?? 'all';
   const today = new Date();
   const isSunday = today.getDay() === 0;
@@ -66,11 +35,24 @@ async function main(): Promise<void> {
   console.log(`\n[wiki-scheduler] 启动 | 模式: ${mode} | 日期: ${today.toISOString()}`);
 
   if (mode === 'distill' || mode === 'all') {
-    await runDistill();
+    const result = await runScheduledDistill(config);
+    console.log('\n=== 蒸馏结果 ===');
+    result.tasks.forEach(t => {
+      const icon = t.success ? '✅' : '❌';
+      console.log(`${icon} ${t.workspace}: ${t.type} (重试${t.retries}次)${t.error ? ' - ' + t.error : ''}`);
+    });
+    if (result.alertSent) {
+      console.log('⚠️ 已发送连续失败告警');
+    }
   }
 
   if (mode === 'merge' || (mode === 'all' && isSunday)) {
-    await runMerge();
+    const result = await runScheduledMerge(config);
+    console.log('\n=== 合并结果 ===');
+    result.tasks.forEach(t => {
+      const icon = t.success ? '✅' : '❌';
+      console.log(`${icon} ${t.workspace}: ${t.type} (重试${t.retries}次)${t.error ? ' - ' + t.error : ''}`);
+    });
   }
 
   console.log('\n=== [wiki-scheduler] 完成 ===\n');

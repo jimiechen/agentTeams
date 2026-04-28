@@ -12,10 +12,15 @@ import { withChatMutex } from '../mutex.js';
 import { execute as wikiDistill } from '../skills/wiki-distill.js';
 import { execute as wikiMerge } from '../skills/wiki-merge.js';
 import { execute as wikiInject, invalidateCache } from '../skills/wiki-inject.js';
-import { switchTask } from '../actions/switch-task.js';
-import { fillPrompt } from '../actions/fill-prompt.js';
-import { submit } from '../actions/submit.js';
-import { waitResponse } from '../actions/wait-response.js';
+import {
+  queryWiki,
+  queryLast,
+  queryLastWeek,
+  queryHistory,
+  getTodos,
+  formatTodos,
+  checkPromotions,
+} from './query.js';
 
 const log = debug('mvp:wikibot');
 
@@ -77,7 +82,10 @@ export class WikiBotHandler {
           `  @WikiBot distill [workspace] - 执行每日蒸馏\n` +
           `  @WikiBot merge [workspace]   - 执行每周合并\n` +
           `  @WikiBot inject [workspace]  - 测试Context注入\n` +
-          `  @WikiBot status               - 查看wiki状态`
+          `  @WikiBot status               - 查看wiki状态\n` +
+          `  @WikiBot 上次/上周/历史       - 查询记忆\n` +
+          `  @WikiBot todo [workspace]     - 查看待办\n` +
+          `  @WikiBot promote              - 检查晋升候选`
         );
         return;
       }
@@ -110,7 +118,7 @@ export class WikiBotHandler {
   };
 
   /** 解析命令 */
-  private parseCommand(text: string): { type: 'distill' | 'merge' | 'inject' | 'status'; workspace?: string } | null {
+  private parseCommand(text: string): { type: string; workspace?: string; query?: string } | null {
     // 去掉前缀
     const cmdText = this.cfg.requiredPrefix
       ? text.replace(this.cfg.requiredPrefix, '').trim()
@@ -132,7 +140,23 @@ export class WikiBotHandler {
       case 'status':
       case '状态':
         return { type: 'status' };
+      // Phase 4: 查询命令
+      case 'query':
+      case '查询':
+      case '上次':
+      case '上周':
+      case '历史':
+        return { type: 'query', query: cmdText };
+      case 'todo':
+        return { type: 'todo', workspace: parts[1] };
+      case 'promote':
+      case '晋升':
+        return { type: 'promote' };
       default:
+        // 尝试匹配查询关键词
+        if (/^(上次|最近|之前|历史|last|latest|week|history)/.test(cmd)) {
+          return { type: 'query', query: cmdText };
+        }
         return null;
     }
   }
@@ -268,6 +292,63 @@ export class WikiBotHandler {
         return {
           success: true,
           details: statuses.join('\n'),
+        };
+      }
+
+      // Phase 4: 查询接口
+      case 'query': {
+        const query = (command as any).query || '上次';
+        const results: string[] = [];
+
+        for (const ws of this.cfg.targetWorkspaces) {
+          const wsPath = path.join(workspacesBase, ws);
+          const result = queryWiki(wsPath, query);
+
+          if (result.found) {
+            results.push(`📚 ${ws} (${result.source}):\n${result.content.substring(0, 800)}...`);
+          } else {
+            results.push(`📚 ${ws}: ${result.content}`);
+          }
+        }
+
+        return {
+          success: true,
+          details: results.join('\n\n---\n\n'),
+        };
+      }
+
+      // Phase 4: 待办管理
+      case 'todo': {
+        const wsName = command.workspace || this.cfg.targetWorkspaces[0];
+        const wsPath = path.join(workspacesBase, wsName);
+
+        const todos = getTodos(wsPath, 'active');
+        const formatted = formatTodos(todos);
+
+        return {
+          success: true,
+          details: `📋 ${wsName} 待办:\n${formatted}`,
+        };
+      }
+
+      // Phase 4: 晋升检查
+      case 'promote': {
+        const candidates = checkPromotions(this.cfg.targetWorkspaces);
+
+        if (candidates.length === 0) {
+          return {
+            success: true,
+            details: '暂无满足晋升条件的知识条目\n（需要2+工作区同时出现相同模式，持续2+周）',
+          };
+        }
+
+        const lines = candidates.map(c =>
+          `- "${c.pattern.substring(0, 50)}..." 出现在: ${c.workspaces.join(', ')}`
+        );
+
+        return {
+          success: true,
+          details: `🔍 发现 ${candidates.length} 条候选晋升知识:\n${lines.join('\n')}\n\n使用 "/wiki promote confirm" 确认晋升`,
         };
       }
 
