@@ -221,11 +221,12 @@ export class MultiTaskRunner {
     actualSlot: number,
   ): void {
     const workspaceDir = path.join(WORKSPACES_BASE_DIR, taskName);
+    const runsDir = path.join(workspaceDir, 'runs');
 
     try {
-      mkdirSync(workspaceDir, { recursive: true });
+      mkdirSync(runsDir, { recursive: true });
 
-      const file = path.join(workspaceDir, `${runId}.md`);
+      const file = path.join(runsDir, `${runId}.md`);
       const md = [
         `# Run ${runId}`,
         ``,

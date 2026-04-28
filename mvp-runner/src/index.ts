@@ -22,7 +22,7 @@ async function main() {
   log('Loaded %d workspaces: %s', workspaces.length, workspaces.map(w => w.name).join(', '));
 
   // 3. 连接 CDP（共享一个CDP连接）
-  const cdp = new CDPClient(cfg.cdp.host, cfg.cdp.port);
+  const cdp = new CDPClient({ host: cfg.cdp.host, port: cfg.cdp.port });
   await cdp.connect();
   log('✅ CDP connected');
 
