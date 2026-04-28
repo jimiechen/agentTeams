@@ -1,0 +1,521 @@
+// mvp-runner/scripts/test-stuck-scenarios-real.ts
+// 三类卡死端到端诱导测试：发送真实 prompt 触发卡死，观察识别→恢复→验证闭环
+//
+// 运行：
+//   DEBUG=mvp:* npx tsx scripts/test-stuck-scenarios-real.ts
+//   DEBUG=mvp:* npx tsx scripts/test-stuck-scenarios-real.ts --case=terminal
+//   DEBUG=mvp:* npx tsx scripts/test-stuck-scenarios-real.ts --case=modal
+//   DEBUG=mvp:* npx tsx scripts/test-stuck-scenarios-real.ts --case=stalled
+//   DEBUG=mvp:* npx tsx scripts/test-stuck-scenarios-real.ts --case=all
+//
+// 前置条件：
+//   1. Trae 已启动且 CDP 端口 9222 可连接
+//   2. MultiTaskRunner 主服务已运行中（处理飞书消息）
+//   3. PMCLI + DEVCLI 两个 Bot 已上线、已加入飞书测试群
+//   4. 如需跑 B 类 modal 测试：workspaces/DEVCLI/ 目录可写
+//
+// 产物：
+//   runs/test-stuck-scenarios-<timestamp>.jsonl  测试报告
+//   runs/metrics.jsonl                            主服务在测试期间追加的恢复记录
+
+import { mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import debug from 'debug';
+import { CDPClient } from '../src/cdp/client.js';
+import { loadConfig } from '../src/config.js';
+import { captureSnapshot } from '../src/actions/state-probe.js';
+
+const log = debug('mvp:test');
+
+// ==================== 类型定义 ====================
+
+type StuckKind = 'terminal-hang' | 'modal-blocking' | 'model-stalled';
+type Mention = 'PMCLI' | 'DEVCLI';
+
+interface StuckCase {
+  id: string;
+  kind: StuckKind;
+  mention: Mention;
+  prompt: string;
+  description: string;
+  /** 观察到卡死信号的 predicate */
+  expectedSignal: (snap: any) => boolean;
+  /** 期望的恢复动作枚举（对应 metrics.jsonl 里的 recovery_action） */
+  expectedRecoveryAction: string;
+  /** 单次用例整体超时 */
+  timeoutMs: number;
+  /** 识别延迟上限：从"卡死信号应当出现"到"探针真正捕获"的最大容忍时间 */
+  maxIdentifyLatencyMs: number;
+  /** 前置准备（可选） */
+  setup?: (cdp: CDPClient) => Promise<void>;
+  /** 清理（可选） */
+  teardown?: (cdp: CDPClient) => Promise<void>;
+  /** 在信号检测阶段是否主动注入模拟（用于 model-stalled 冻结 fetch） */
+  injectStall?: (cdp: CDPClient) => Promise<void>;
+}
+
+// ==================== 测试用例定义 ====================
+
+const CASES: StuckCase[] = [
+  // ---------- 类型 A：终端卡死 ----------
+  {
+    id: 'A1-terminal-sleep',
+    kind: 'terminal-hang',
+    mention: 'DEVCLI',
+    prompt: '请在终端执行命令：sleep 90；等它完成后告诉我"sleep 已完成"',
+    description: '通过 sleep 90 诱导终端长时间运行，验证 terminal-hang 识别与 background 恢复',
+    expectedSignal: s => s.hasTerminalBtn === true,
+    expectedRecoveryAction: 'bg_run',
+    timeoutMs: 60_000,
+    maxIdentifyLatencyMs: 15_000, // DEV 阈值 8s + 心跳 2s + 网络余量 5s
+  },
+  {
+    id: 'A2-terminal-npm-install',
+    kind: 'terminal-hang',
+    mention: 'DEVCLI',
+    prompt: '在 /tmp/test-npm-' + Date.now() + ' 目录下创建空 package.json，然后跑 npm install lodash',
+    description: 'npm install 真实长任务诱导终端按钮',
+    expectedSignal: s => s.hasTerminalBtn === true,
+    expectedRecoveryAction: 'bg_run',
+    timeoutMs: 90_000,
+    maxIdentifyLatencyMs: 20_000,
+  },
+
+  // ---------- 类型 B：删除弹窗 ----------
+  {
+    id: 'B1-modal-delete-temp',
+    kind: 'modal-blocking',
+    mention: 'DEVCLI',
+    prompt: '在 workspaces/DEVCLI/ 下创建 test-to-delete.txt（内容随意），然后用 delete_file 工具删除它',
+    description: '创建后删除诱导删除确认弹窗',
+    expectedSignal: s => s.hasDeleteCard === true,
+    expectedRecoveryAction: 'keep', // DEVCLI 默认 keep
+    timeoutMs: 45_000,
+    maxIdentifyLatencyMs: 8_000, // 阈值 3s + 心跳 2s + 余量 3s
+    setup: async () => {
+      mkdirSync(path.resolve('./workspaces/DEVCLI'), { recursive: true });
+    },
+  },
+  {
+    id: 'B2-modal-overwrite',
+    kind: 'modal-blocking',
+    mention: 'DEVCLI',
+    prompt: '在 workspaces/DEVCLI/ 下创建 existing.md（内容："old"），然后覆盖写入新内容："new content"',
+    description: '覆盖已有文件诱导覆盖确认弹窗',
+    expectedSignal: s => s.hasDeleteCard === true,
+    expectedRecoveryAction: 'confirm', // DEVCLI 覆盖策略为 confirm
+    timeoutMs: 45_000,
+    maxIdentifyLatencyMs: 8_000,
+    setup: async () => {
+      mkdirSync(path.resolve('./workspaces/DEVCLI'), { recursive: true });
+    },
+  },
+
+  // ---------- 类型 C：模型停滞 ----------
+  {
+    id: 'C1-stalled-fetch-freeze',
+    kind: 'model-stalled',
+    mention: 'DEVCLI',
+    prompt: '请写一篇 800 字的技术博客，主题是"CDP 协议在浏览器自动化中的设计与实践"，包含代码示例',
+    description: 'AI 开始生成后在 Console 冻结 fetch，模拟模型停滞',
+    expectedSignal: s => s.btnFunction === 'stop',
+    expectedRecoveryAction: 'stop',
+    timeoutMs: 150_000,
+    maxIdentifyLatencyMs: 55_000, // DEV 阈值 45s + 心跳 2s + 余量 8s
+    injectStall: async (cdp) => {
+      // 等 5 秒让 AI 开始生成，然后冻结 fetch 45 秒
+      await sleep(5_000);
+      await cdp.evaluate(`
+        (() => {
+          if (window.__test_frozen_fetch) return 'already-frozen';
+          window.__test_original_fetch = window.fetch;
+          window.fetch = () => new Promise(() => {});
+          window.__test_frozen_fetch = true;
+          setTimeout(() => {
+            if (window.__test_original_fetch) {
+              window.fetch = window.__test_original_fetch;
+              window.__test_frozen_fetch = false;
+            }
+          }, 45000);
+          return 'frozen';
+        })()
+      `);
+      log('C1: fetch frozen for 45s');
+    },
+    teardown: async (cdp) => {
+      // 保险起见强制恢复 fetch
+      await cdp.evaluate(`
+        (() => {
+          if (window.__test_original_fetch) {
+            window.fetch = window.__test_original_fetch;
+            window.__test_frozen_fetch = false;
+          }
+          return 'restored';
+        })()
+      `);
+    },
+  },
+];
+
+// ==================== 报告工具 ====================
+
+class TestReporter {
+  private path: string;
+  private results: any[] = [];
+
+  constructor(kind: string) {
+    mkdirSync(path.resolve('./runs'), { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    this.path = path.resolve(`./runs/test-${kind}-${ts}.jsonl`);
+    writeFileSync(this.path, '');
+    log('report file: %s', this.path);
+  }
+
+  record(entry: any) {
+    const withTs = { ...entry, recordedAt: new Date().toISOString() };
+    this.results.push(withTs);
+    appendFileSync(this.path, JSON.stringify(withTs) + '\n');
+  }
+
+  summary() {
+    const total = this.results.length;
+    const passed = this.results.filter(r => r.status === 'PASS').length;
+    const failed = total - passed;
+    const rate = total > 0 ? ((passed / total) * 100).toFixed(1) : '0.0';
+
+    console.log('\n' + '='.repeat(72));
+    console.log('Stuck Scenario Test Summary');
+    console.log(`  Total:         ${total}`);
+    console.log(`  Passed:        ${passed} ✅`);
+    console.log(`  Failed:        ${failed} ❌`);
+    console.log(`  Rate:          ${rate}%`);
+    console.log(`  Report:        ${this.path}`);
+    console.log('='.repeat(72));
+
+    // 按 kind 汇总
+    const byKind: Record<string, { total: number; passed: number }> = {};
+    for (const r of this.results) {
+      const k = r.kind || 'unknown';
+      byKind[k] = byKind[k] || { total: 0, passed: 0 };
+      byKind[k].total++;
+      if (r.status === 'PASS') byKind[k].passed++;
+    }
+    console.log('\nBy failure kind:');
+    for (const [k, v] of Object.entries(byKind)) {
+      const kRate = ((v.passed / v.total) * 100).toFixed(0);
+      console.log(`  ${k.padEnd(20)} ${v.passed}/${v.total} passed (${kRate}%)`);
+    }
+
+    if (failed > 0) {
+      console.log('\nFailed cases:');
+      this.results
+        .filter(r => r.status !== 'PASS')
+        .forEach(r => console.log(`  ❌ [${r.id}] ${r.status}: ${r.reason || r.error || 'unknown'}`));
+    }
+
+    return { total, passed, failed, rate: parseFloat(rate) };
+  }
+}
+
+// ==================== 飞书发送封装 ====================
+
+async function sendPromptViaLark(mention: Mention, prompt: string, cfg: any): Promise<string> {
+  // 动态导入避免启动开销
+  const { LarkClient } = await import('../src/lark/client.js');
+  const client = new LarkClient({
+    appId: cfg.lark.app_id,
+    appSecret: cfg.lark.app_secret,
+    chatId: cfg.lark.chat_ids?.[0] ?? cfg.lark.chat_id,
+  });
+  const fullPrompt = `@${mention} ${prompt}`;
+  log('sending to Lark: %s', fullPrompt.slice(0, 80));
+  const messageId = await client.sendMessage(fullPrompt);
+  log('sent, messageId=%s', messageId);
+  return messageId;
+}
+
+// ==================== 信号等待 ====================
+
+async function waitForSignal(
+  cdp: CDPClient,
+  predicate: (snap: any) => boolean,
+  timeoutMs: number,
+  pollIntervalMs = 1_000,
+): Promise<{ matched: boolean; snap: any; waitedMs: number }> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const snap = await captureSnapshot(cdp);
+      if (predicate(snap)) {
+        return { matched: true, snap, waitedMs: Date.now() - startedAt };
+      }
+    } catch (e) {
+      log('snapshot error: %s', (e as Error).message);
+    }
+    await sleep(pollIntervalMs);
+  }
+  return { matched: false, snap: null, waitedMs: timeoutMs };
+}
+
+/** 等待恢复后信号消失 */
+async function waitForSignalCleared(
+  cdp: CDPClient,
+  predicate: (snap: any) => boolean,
+  timeoutMs: number,
+  pollIntervalMs = 1_000,
+): Promise<{ cleared: boolean; snap: any; waitedMs: number }> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const snap = await captureSnapshot(cdp);
+      if (!predicate(snap)) {
+        return { cleared: true, snap, waitedMs: Date.now() - startedAt };
+      }
+    } catch {}
+    await sleep(pollIntervalMs);
+  }
+  return { cleared: false, snap: null, waitedMs: timeoutMs };
+}
+
+// ==================== metrics.jsonl 核对 ====================
+
+function findRecoveryMetric(
+  kind: StuckKind,
+  sinceTs: number,
+  expectedAction?: string,
+): any | null {
+  const file = path.resolve('./runs/metrics.jsonl');
+  if (!existsSync(file)) {
+    log('metrics.jsonl not found: %s', file);
+    return null;
+  }
+  try {
+    const lines = readFileSync(file, 'utf-8').trim().split('\n').reverse();
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        const obj = JSON.parse(line);
+        const objTs = typeof obj.timestamp === 'string'
+          ? new Date(obj.timestamp).getTime()
+          : (obj.timestamp || 0);
+        if (objTs < sinceTs) break; // reverse 遍历，时间戳小于起点就可以停
+        if (obj.stuck_kind !== kind) continue;
+        if (expectedAction && obj.recovery_action !== expectedAction) continue;
+        return obj;
+      } catch {
+        // 单行解析失败，跳过
+      }
+    }
+  } catch (e) {
+    log('read metrics.jsonl error: %s', (e as Error).message);
+  }
+  return null;
+}
+
+// ==================== 单用例执行 ====================
+
+async function runCase(cdp: CDPClient, c: StuckCase, cfg: any, reporter: TestReporter): Promise<void> {
+  console.log(`\n▶ [${c.id}] ${c.mention} | ${c.kind}`);
+  console.log(`  ${c.description}`);
+
+  const startedAt = Date.now();
+  const sinceTs = startedAt; // 用于后续过滤 metrics.jsonl
+
+  try {
+    // 1. 前置准备
+    if (c.setup) {
+      await c.setup(cdp);
+      log('setup done');
+    }
+
+    // 2. 发送 prompt 到飞书
+    const messageId = await sendPromptViaLark(c.mention, c.prompt, cfg);
+    console.log(`  ✓ prompt sent, messageId=${messageId}`);
+
+    // 3. 如果是 model-stalled 场景，启动冻结注入（异步不阻塞信号等待）
+    if (c.injectStall) {
+      c.injectStall(cdp).catch(e => log('injectStall error: %s', (e as Error).message));
+    }
+
+    // 4. 等待卡死信号出现
+    console.log(`  ⏳ waiting for stuck signal (timeout=${c.maxIdentifyLatencyMs}ms)...`);
+    const signalResult = await waitForSignal(cdp, c.expectedSignal, c.maxIdentifyLatencyMs);
+
+    if (!signalResult.matched) {
+      console.log(`  ❌ signal NOT detected within ${c.maxIdentifyLatencyMs}ms`);
+      reporter.record({
+        id: c.id,
+        kind: c.kind,
+        mention: c.mention,
+        status: 'FAIL',
+        phase: 'signal-detection',
+        reason: `stuck signal not captured within ${c.maxIdentifyLatencyMs}ms`,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    }
+    const identifyLatencyMs = signalResult.waitedMs;
+    console.log(`  ✓ signal detected in ${identifyLatencyMs}ms`);
+
+    // 5. 等待恢复动作触发（观察信号消失）
+    console.log(`  ⏳ waiting for recovery (signal to clear)...`);
+    const remaining = c.timeoutMs - (Date.now() - startedAt);
+    const clearResult = await waitForSignalCleared(cdp, c.expectedSignal, Math.max(10_000, remaining));
+
+    if (!clearResult.cleared) {
+      console.log(`  ❌ recovery did NOT clear signal within timeout`);
+      reporter.record({
+        id: c.id,
+        kind: c.kind,
+        mention: c.mention,
+        status: 'FAIL',
+        phase: 'recovery-clear',
+        reason: 'signal persisted, recovery likely failed',
+        identifyLatencyMs,
+        snapshot: signalResult.snap,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    }
+    const recoveryLatencyMs = clearResult.waitedMs;
+    console.log(`  ✓ signal cleared in ${recoveryLatencyMs}ms after identification`);
+
+    // 6. 核对 metrics.jsonl
+    await sleep(1_500); // 给主服务时间落盘
+    const metric = findRecoveryMetric(c.kind, sinceTs, c.expectedRecoveryAction);
+
+    if (!metric) {
+      console.log(`  ⚠️  metrics.jsonl has NO matching recovery record for kind=${c.kind} action=${c.expectedRecoveryAction}`);
+      reporter.record({
+        id: c.id,
+        kind: c.kind,
+        mention: c.mention,
+        status: 'FAIL',
+        phase: 'metrics-verify',
+        reason: `no metrics entry for kind=${c.kind} action=${c.expectedRecoveryAction}`,
+        identifyLatencyMs,
+        recoveryLatencyMs,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    }
+
+    if (metric.recovery_ok !== true) {
+      console.log(`  ❌ metrics says recovery_ok=false: ${metric.reason || 'unknown'}`);
+      reporter.record({
+        id: c.id,
+        kind: c.kind,
+        mention: c.mention,
+        status: 'FAIL',
+        phase: 'metrics-verify',
+        reason: `recovery_ok=false in metrics: ${metric.reason || 'unknown'}`,
+        metric,
+        identifyLatencyMs,
+        recoveryLatencyMs,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    }
+
+    // 7. 全部通过
+    console.log(`  ✅ PASS | identify=${identifyLatencyMs}ms recovery=${recoveryLatencyMs}ms action=${metric.recovery_action}`);
+    reporter.record({
+      id: c.id,
+      kind: c.kind,
+      mention: c.mention,
+      status: 'PASS',
+      identifyLatencyMs,
+      recoveryLatencyMs,
+      expectedRecoveryAction: c.expectedRecoveryAction,
+      actualRecoveryAction: metric.recovery_action,
+      metric,
+      durationMs: Date.now() - startedAt,
+    });
+
+  } catch (err) {
+    console.log(`  💥 ERROR: ${(err as Error).message}`);
+    reporter.record({
+      id: c.id,
+      kind: c.kind,
+      mention: c.mention,
+      status: 'ERROR',
+      error: (err as Error).message,
+      stack: (err as Error).stack,
+      durationMs: Date.now() - startedAt,
+    });
+  } finally {
+    if (c.teardown) {
+      try {
+        await c.teardown(cdp);
+        log('teardown done');
+      } catch (e) {
+        log('teardown error: %s', (e as Error).message);
+      }
+    }
+  }
+}
+
+// ==================== 主入口 ====================
+
+function parseArgs(argv: string[]) {
+  const out: Record<string, string> = {};
+  for (const arg of argv) {
+    const m = arg.match(/^--([^=]+)=(.*)$/);
+    if (m) out[m[1]] = m[2];
+  }
+  return out;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const filter = args.case ?? 'all';
+
+  const cfg = loadConfig();
+  const cdp = new CDPClient(cfg.cdp.host, cfg.cdp.port);
+
+  console.log('\n🔌 Connecting to Trae CDP...');
+  await cdp.connect();
+  console.log(`✅ Connected to ${cfg.cdp.host}:${cfg.cdp.port}`);
+
+  const reporter = new TestReporter('stuck-scenarios');
+
+  // 过滤用例
+  const selected = CASES.filter(c => {
+    if (filter === 'all') return true;
+    if (filter === 'terminal') return c.kind === 'terminal-hang';
+    if (filter === 'modal') return c.kind === 'modal-blocking';
+    if (filter === 'stalled') return c.kind === 'model-stalled';
+    return c.id === filter;
+  });
+
+  if (selected.length === 0) {
+    console.log(`⚠️ No test case matched filter "${filter}"`);
+    await cdp.dispose();
+    process.exit(2);
+  }
+
+  console.log(`\n📋 Selected ${selected.length} case(s): ${selected.map(c => c.id).join(', ')}`);
+  console.log(`⚠️ NOTE: 测试期间请确保主服务 (runner-multi) 正在运行，否则恢复动作不会触发\n`);
+
+  // 串行执行：避免多个任务互相干扰
+  for (const c of selected) {
+    await runCase(cdp, c, cfg, reporter);
+    // 每个用例之间留 10 秒冷却，让主服务清理状态
+    console.log(`  💤 cooldown 10s before next case...`);
+    await sleep(10_000);
+  }
+
+  const summary = reporter.summary();
+  await cdp.dispose();
+
+  process.exit(summary.failed === 0 ? 0 : 1);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+main().catch(err => {
+  console.error('Fatal:', err);
+  process.exit(2);
+});

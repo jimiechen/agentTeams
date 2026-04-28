@@ -14,11 +14,13 @@ import type { LarkBot, LarkInbound } from './lark/client.js';
 import type { AppConfig } from './config.js';
 import type { WorkspaceConfig } from './workspace/loader.js';
 import { findWorkspaceByMention } from './workspace/loader.js';
+import { WorkspaceLogger, loggerManager } from './utils/workspace-logger.js';
 
 const log = debug('mvp:runner-multi');
 
 export class MultiTaskRunner {
   private runsDir: string;
+  private loggers = new Map<string, WorkspaceLogger>();
 
   constructor(
     private cfg: AppConfig,
@@ -28,10 +30,35 @@ export class MultiTaskRunner {
   ) {
     this.runsDir = path.resolve('./runs');
     mkdirSync(this.runsDir, { recursive: true });
+
+    // 为每个工作空间初始化logger
+    this.initWorkspaceLoggers();
+  }
+
+  /** 初始化所有工作空间的logger */
+  private initWorkspaceLoggers(): void {
+    for (const ws of this.workspaces) {
+      const logger = loggerManager.getLogger(ws.path, 'lark');
+      this.loggers.set(ws.name, logger);
+
+      // 为对应的bot设置logger
+      const bot = this.bots.find(b => b.keyword === ws.mentionKeyword);
+      if (bot) {
+        bot.setLogger(logger);
+      }
+    }
+  }
+
+  /** 获取工作空间的logger */
+  private getLogger(workspaceName: string): WorkspaceLogger | undefined {
+    return this.loggers.get(workspaceName);
   }
 
   /** 通用消息处理器 */
   handle = async (msg: LarkInbound, botKeyword: string): Promise<void> => {
+    const runId = new Date().toISOString().replace(/[:.]/g, '-');
+    const startedAt = Date.now();
+
     // 1. 白名单
     const allowed = this.cfg.pmbot.allowed_users;
     if (allowed.length > 0 && !allowed.includes(msg.senderId)) {
@@ -109,17 +136,26 @@ export class MultiTaskRunner {
     // 4. 立即 ACK
     const taskDisplay = targetTaskName || `slot #${targetSlot}`;
     const wsDisplay = matchedWorkspace ? `[${matchedWorkspace.name}] ` : '';
+
+    // 获取logger
+    const logger = matchedWorkspace ? this.getLogger(matchedWorkspace.name) : undefined;
+    logger?.logTaskLifecycle(runId, 'start', {
+      senderId: msg.senderId,
+      taskName: targetTaskName,
+      slot: targetSlot,
+      prompt: parsed.prompt.slice(0, 100),
+    });
+
     if (this.cfg.pmbot.ack_on_receive) {
       await this.replyByKeyword(botKeyword, msg.messageId, `✅ ${wsDisplay}已收到 (${taskDisplay})，排队中…`);
+      logger?.logTaskLifecycle(runId, 'ack', { taskDisplay });
     }
 
     // 5. 加锁执行
-    const runId = new Date().toISOString().replace(/[:.]/g, '-');
-    const startedAt = Date.now();
-
     try {
       await withChatMutex(`run-${runId}`, async () => {
         log('[%s] task=%s slot=%d prompt="%s"', runId, targetTaskName || 'unknown', targetSlot, parsed.prompt.slice(0, 40));
+        logger?.logTaskLifecycle(runId, 'switch', { taskName: targetTaskName, slot: targetSlot });
 
         // 切换到目标slot
         await this.sendByKeyword(botKeyword, `🔀 切换到 ${taskDisplay}…`);
@@ -127,22 +163,31 @@ export class MultiTaskRunner {
 
         // 填充提示词
         await fillPrompt(this.cdp, parsed.prompt);
+        logger?.logTaskLifecycle(runId, 'fill', { promptLength: parsed.prompt.length });
 
         // 提交
         await submit(this.cdp);
         await this.sendByKeyword(botKeyword, `📤 已提交，等待 AI 响应…`);
+        logger?.logTaskLifecycle(runId, 'submit', {});
 
         // 等待响应
         const response = await waitResponse(this.cdp, {
           timeoutMs: this.cfg.pmbot.response_timeout_ms,
           taskName: targetTaskName || undefined,
+          logger,  // 传入logger记录心跳
         });
+        logger?.logTaskLifecycle(runId, 'wait', { responseLength: response.length });
 
         const duration = Date.now() - startedAt;
 
         // 保存到对应工作空间
         if (matchedWorkspace) {
           this.persistToWorkspace(runId, matchedWorkspace.name, parsed, response, duration, msg.senderId, targetSlot);
+          logger?.logTaskLifecycle(runId, 'complete', {
+            duration,
+            responseLength: response.length,
+            savedToWorkspace: matchedWorkspace.name,
+          });
         }
 
         // 同时保存到runs目录
@@ -177,6 +222,11 @@ export class MultiTaskRunner {
     } catch (err) {
       const errMsg = (err as Error).message;
       log('[%s] failed: %s', runId, errMsg);
+      logger?.logTaskLifecycle(runId, 'error', {
+        error: errMsg,
+        stack: (err as Error).stack,
+        duration: Date.now() - startedAt,
+      });
       await this.replyByKeyword(botKeyword, msg.messageId, `❌ 执行失败：${errMsg}`);
       this.persist(runId, parsed, `<ERROR: ${errMsg}>`, Date.now() - startedAt, msg.senderId, targetTaskName, targetSlot);
     }
@@ -219,7 +269,13 @@ export class MultiTaskRunner {
   ): void {
     const workspacesBaseDir = path.resolve(this.cfg.pmbot.workspaces_base_dir);
     const workspaceDir = path.join(workspacesBaseDir, taskName);
-    const runsDir = path.join(workspaceDir, 'runs');
+    
+    // 从runId提取日期 (2026-04-28T08-09-58-004Z -> 20260428)
+    const dateMatch = runId.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    const dateStr = dateMatch ? `${dateMatch[1]}${dateMatch[2]}${dateMatch[3]}` : 'unknown';
+    
+    // 按日期分组存储: workspaces/DEVCLI/runs/20260428/
+    const runsDir = path.join(workspaceDir, 'runs', dateStr);
 
     try {
       mkdirSync(runsDir, { recursive: true });
@@ -251,7 +307,7 @@ export class MultiTaskRunner {
     }
   }
 
-  /** 保存到runs目录（按任务分子目录） */
+  /** 保存到runs目录（按任务和日期分子目录） */
   private persist(
     runId: string,
     parsed: { slot: number; prompt: string; raw: string },
@@ -262,7 +318,13 @@ export class MultiTaskRunner {
     actualSlot?: number,
   ): void {
     const task = taskName || 'unknown';
-    const taskDir = path.join(this.runsDir, task);
+    
+    // 从runId提取日期 (2026-04-28T08-09-58-004Z -> 20260428)
+    const dateMatch = runId.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    const dateStr = dateMatch ? `${dateMatch[1]}${dateMatch[2]}${dateMatch[3]}` : 'unknown';
+    
+    // 按任务和日期分组: runs/DEVCLI/20260428/
+    const taskDir = path.join(this.runsDir, task, dateStr);
 
     mkdirSync(taskDir, { recursive: true });
 

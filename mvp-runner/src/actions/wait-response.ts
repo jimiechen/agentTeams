@@ -6,6 +6,7 @@ import { CDPClient } from '../cdp/client.js';
 import { ResponseTimeoutError } from '../errors.js';
 import { captureSnapshot, isModelStalled, isTaskCompleted, detectBlocking, SystemSnapshot } from './state-probe.js';
 import { recoverTerminalHang, recoverDeleteModal, recoverOverwriteModal, recoverModelStalled } from './recover.js';
+import type { WorkspaceLogger } from '../utils/workspace-logger.js';
 
 const debug = createDebug('mvp:action:wait');
 
@@ -19,6 +20,7 @@ export interface WaitResponseOptions {
     overwriteAction: 'keep' | 'overwrite';
     maxModelRetries: number;
   };
+  logger?: WorkspaceLogger; // 可选的logger，用于记录心跳
 }
 
 export interface TaskResult {
@@ -69,19 +71,32 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
 
     debug(`Heartbeat #${checkCount}: btn=${snap.btnFunction}, task=${snap.taskStatus}, terminal=${snap.hasTerminalBtn}, delete=${snap.hasDeleteCard}`);
 
+    // 记录心跳到文件日志
+    opts?.logger?.logHeartbeat(checkCount, {
+      btnFunction: snap.btnFunction,
+      taskStatus: snap.taskStatus,
+      hasTerminalBtn: snap.hasTerminalBtn,
+      hasDeleteCard: snap.hasDeleteCard,
+      lastTurnTextLen: snap.lastTurnTextLen,
+    });
+
     // ========== 优先级1: 检测阻塞性弹窗（最高优先级）==========
     const blocking = detectBlocking(snapshots);
     if (blocking.type === 'delete_modal') {
       debug('Delete modal detected, recovering...');
+      opts?.logger?.warn('Delete modal detected, recovering...', { action: policy.deleteAction });
       const result = await recoverDeleteModal(cdp, policy.deleteAction);
       debug('Delete modal recovery: %o', result);
+      opts?.logger?.info('Delete modal recovery result', { success: result.success, action: result.action });
       if (result.success) {
         continue;  // 恢复后继续心跳
       }
     } else if (blocking.type === 'overwrite_modal') {
       debug('Overwrite modal detected, recovering...');
+      opts?.logger?.warn('Overwrite modal detected, recovering...', { action: policy.overwriteAction });
       const result = await recoverOverwriteModal(cdp, policy.overwriteAction);
       debug('Overwrite modal recovery: %o', result);
+      opts?.logger?.info('Overwrite modal recovery result', { success: result.success, action: result.action });
       if (result.success) {
         continue;
       }
@@ -90,8 +105,10 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
       const terminalFirstSeen = findFirstTerminalBtnTime(snapshots);
       if (terminalFirstSeen && Date.now() - terminalFirstSeen > 5000) {
         debug('Terminal hang detected (>5s), recovering...');
+        opts?.logger?.warn('Terminal hang detected (>5s), recovering...', { action: policy.terminalAction });
         const result = await recoverTerminalHang(cdp, policy.terminalAction);
         debug('Terminal hang recovery: %o', result);
+        opts?.logger?.info('Terminal hang recovery result', { success: result.success, action: result.action });
         if (result.success) {
           continue;
         }
@@ -102,6 +119,11 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
     if (isTaskCompleted(snapshots)) {
       const elapsed = Date.now() - startTime;
       debug(`Task completed after ${elapsed}ms (checked ${checkCount} times)`);
+      opts?.logger?.info('Task completed', {
+        elapsedMs: elapsed,
+        heartbeatCount: checkCount,
+        taskName,
+      });
       break;
     }
 
@@ -110,8 +132,10 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
       if (modelRetryCount < policy.maxModelRetries) {
         modelRetryCount++;
         debug(`Model stalled detected, retry ${modelRetryCount}/${policy.maxModelRetries}...`);
+        opts?.logger?.warn('Model stalled detected, retrying...', { retryCount: modelRetryCount, maxRetries: policy.maxModelRetries });
         const result = await recoverModelStalled(cdp);
         debug('Model stalled recovery: %o', result);
+        opts?.logger?.info('Model stalled recovery result', { success: result.success, action: result.action });
         if (result.success) {
           // 清空快照窗口，重新检测
           snapshots.length = 0;
@@ -119,6 +143,7 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
         }
       } else {
         debug('Max model retries reached');
+        opts?.logger?.error('Max model retries reached', { retryCount: modelRetryCount, taskName });
         throw new Error(`[模型停滞] 任务 "${taskName}" 模型无响应超过30秒，已达最大重试次数(${policy.maxModelRetries})，请检查网络或稍后重试。`);
       }
     }
@@ -131,6 +156,12 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
   if (Date.now() - startTime >= timeoutMs) {
     const elapsed = Date.now() - startTime;
     debug(`Timeout after ${elapsed}ms`);
+    opts?.logger?.error('Task timeout', {
+      elapsedMs: elapsed,
+      timeoutMs,
+      heartbeatCount: checkCount,
+      taskName,
+    });
     throw new Error(`[任务超时] 任务 "${taskName}" 在 ${Math.round(elapsed / 1000)} 秒内未完成，已超时。请检查任务状态或稍后重试。`);
   }
 
