@@ -1,0 +1,43 @@
+# WikiBot 配置文件
+
+bot:
+  name: WikiBot
+  workspace: WikiBot
+  lark:
+    userId: "${WIKIBOT_LARK_USER_ID}"
+    botToken: "${LARK_BOT_TOKEN}"
+
+  messageFilter:
+    allowedSenders:
+      - "${SCHEDULER_LARK_USER_ID}"
+    requiredPrefix: "@WikiBot"
+
+  timeouts:
+    distillTask: 180000   # 3 分钟
+    mergeTask: 120000     # 2 分钟
+
+  replyOnComplete: true
+  replyTemplate: "✅ WikiBot 完成 {taskType} 任务\n工作区: {workspace}\n输出: {outputPath}\n字数: {chars}"
+
+distill:
+  mode: trae_slot
+  slot_index: 2
+  timeout_ms: 600000
+  schedule: "0 4 * * *"
+  retry_delay_min: 15
+  max_retries: 3
+  min_output_length: 50
+  required_dimensions: 4
+
+merge:
+  schedule: "0 3 * * 0"
+  hard_limit_chars: 300
+  max_items: 50
+  keep_days_backup: 30
+
+context_injection:
+  max_context_ratio: 0.15
+  layer2_max_chars: 300
+  shared_max_chars: 200
+  layer1_days: 3
+  todo_max_lines: 20

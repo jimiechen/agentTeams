@@ -1,0 +1,434 @@
+/**
+ * Skill: wiki-merge
+ * 职责: Layer 1 (wiki/daily) → Layer 2 (wiki/core) 每周合并
+ */
+
+import {
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  copyFileSync,
+  unlinkSync,
+  statSync,
+} from 'node:fs';
+import path from 'node:path';
+import https from 'node:https';
+
+// ──────────────────────────────────────────────
+// 类型定义
+// ──────────────────────────────────────────────
+
+interface SkillContext {
+  params: {
+    workspacePath: string;
+    weekStart?: string;
+    weekEnd?: string;
+    dryRun?: boolean;
+  };
+  env: {
+    OPENAI_API_KEY?: string;
+    OPENAI_BASE_URL?: string;
+    MERGE_MODEL?: string;
+  };
+}
+
+interface MergeResult {
+  success: boolean;
+  outputPath?: string;
+  backupPath?: string;
+  weekFilesCount: number;
+  previousCoreChars: number;
+  newCoreChars: number;
+  itemsCount?: number;
+  error?: string;
+}
+
+// ──────────────────────────────────────────────
+// 工具函数
+// ──────────────────────────────────────────────
+
+/** 获取本周一到昨天的日期列表 */
+function getWeekDateRange(weekStart?: string, weekEnd?: string): string[] {
+  const end = weekEnd
+    ? new Date(weekEnd)
+    : (() => {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        return d;
+      })();
+
+  const start = weekStart
+    ? new Date(weekStart)
+    : (() => {
+        const d = new Date(end);
+        const day = d.getDay();
+        const daysToMonday = day === 0 ? 6 : day - 1;
+        d.setDate(d.getDate() - daysToMonday);
+        return d;
+      })();
+
+  const dates: string[] = [];
+  const current = new Date(start);
+  while (current <= end) {
+    dates.push(current.toISOString().split('T')[0]);
+    current.setDate(current.getDate() + 1);
+  }
+  return dates;
+}
+
+/** 提取 Layer 2 中被标记为 [重要] 的条目 */
+function extractProtectedItems(coreContent: string): string[] {
+  return coreContent
+    .split('\n')
+    .filter((l) => l.includes('[重要]'));
+}
+
+/** 统计 Markdown 列表条目数量 */
+function countItems(content: string): number {
+  return content.split('\n').filter((l) => /^[-*]\s+.+/.test(l)).length;
+}
+
+/** 验证合并输出质量 */
+function validateMergeOutput(output: string): { valid: boolean; reason?: string } {
+  if (output.length < 100) {
+    return { valid: false, reason: '输出过短（<100字），疑似 LLM 截断' };
+  }
+  if (output.length > 1800) {
+    return { valid: false, reason: `输出超过字数上限（${output.length} 字符）` };
+  }
+  const requiredSections = ['架构决策', '稳定模式', '用户偏好', '已知陷阱'];
+  const missing = requiredSections.filter((s) => !output.includes(s));
+  if (missing.length > 2) {
+    return { valid: false, reason: `缺少必要章节: ${missing.join(', ')}` };
+  }
+  return { valid: true };
+}
+
+/** 清理 30 天前的备份文件 */
+function cleanOldBackups(backupDir: string, keepDays = 30): void {
+  if (!existsSync(backupDir)) return;
+  const now = Date.now();
+  const threshold = keepDays * 24 * 60 * 60 * 1000;
+  try {
+    readdirSync(backupDir).forEach((f) => {
+      const filePath = path.join(backupDir, f);
+      const stat = statSync(filePath);
+      if (now - stat.mtimeMs > threshold) {
+        unlinkSync(filePath);
+        console.log(`[wiki-merge] 清理旧备份: ${f}`);
+      }
+    });
+  } catch {
+    // 清理失败不影响主流程
+  }
+}
+
+// ──────────────────────────────────────────────
+// LLM 调用
+// ──────────────────────────────────────────────
+
+async function callLLM(
+  prompt: string,
+  apiKey: string,
+  baseUrl = 'https://api.openai.com',
+  model = 'gpt-4o-mini'
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 800,
+      temperature: 0.2,
+    });
+
+    const url = new URL(`${baseUrl}/v1/chat/completions`);
+    const options = {
+      hostname: url.hostname,
+      port: url.port || 443,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Length': Buffer.byteLength(body),
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) {
+            reject(new Error(`LLM API Error: ${parsed.error.message}`));
+          } else {
+            resolve(parsed.choices?.[0]?.message?.content ?? '');
+          }
+        } catch (e) {
+          reject(new Error(`JSON parse failed: ${data.substring(0, 200)}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.setTimeout(90000, () => {
+      req.destroy();
+      reject(new Error('Merge LLM timeout (90s)'));
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+// ──────────────────────────────────────────────
+// Prompt 构建
+// ──────────────────────────────────────────────
+
+function buildMergePrompt(
+  weekContent: string,
+  existingCore: string,
+  protectedItems: string[],
+  today: string
+): string {
+  const safeWeekContent =
+    weekContent.length > 9000
+      ? weekContent.substring(0, 9000) + '\n\n[内容已截断]'
+      : weekContent;
+
+  const protectedSection =
+    protectedItems.length > 0
+      ? `\n## 受保护条目（无论如何必须保留，不得淘汰）\n${protectedItems.join('\n')}\n`
+      : '';
+
+  return `## 角色
+你是项目知识策展人，负责维护最核心的项目知识，要求极度精炼。
+
+## 任务
+将本周的每日记忆与现有核心知识合并，输出 300 字以内的精炼版本。
+
+## 本周每日记忆
+${safeWeekContent}
+
+## 现有核心知识
+${existingCore || '（暂无，本次为首次合并）'}
+${protectedSection}
+## 淘汰规则（严格遵循）
+1. **保留**: 架构决策、本周出现 ≥2 次的模式、稳定的用户偏好、已知陷阱
+2. **淘汰**: 临时问题、一次性事件、已修复的 Bug、细节过程（保留结论）
+3. **合并**: 相似知识合并为一条，保留最新版本
+4. **硬上限**: 总条目不超过 50 条，超出时按验证时间从旧到新淘汰
+5. **受保护**: 标有 [重要] 的条目无论如何必须保留
+
+## 输出格式（严格遵循，使用 Markdown）
+
+# 项目核心知识（更新时间：${today}）
+
+## 架构决策
+- （格式：[决策内容] - [原因/依据]）
+
+## 稳定模式
+- （格式：[触发场景] → [处理方式] → [预期效果]）
+
+## 用户偏好
+- （格式：[工作区/用户] [偏好描述]）
+
+## 已知陷阱
+- （格式：[陷阱描述] ⚠️ [避免方式]）
+
+## 性能基线
+- （格式：[工作区] [指标名]: [基准值]，偏差 >[阈值] 时告警）
+
+## 要求
+1. 总字数严格控制在 300 字以内
+2. 只保留"一个月后再看仍然有价值"的信息
+3. 每条知识必须具体可操作，不写泛泛而谈的原则
+4. 用中文输出`;
+}
+
+// ──────────────────────────────────────────────
+// 主执行逻辑
+// ──────────────────────────────────────────────
+
+export async function execute(context: SkillContext): Promise<MergeResult> {
+  const {
+    workspacePath,
+    weekStart,
+    weekEnd,
+    dryRun = false,
+  } = context.params;
+
+  const apiKey = context.env.OPENAI_API_KEY ?? process.env.OPENAI_API_KEY ?? '';
+  const baseUrl =
+    context.env.OPENAI_BASE_URL ??
+    process.env.OPENAI_BASE_URL ??
+    'https://api.openai.com';
+  const model =
+    context.env.MERGE_MODEL ??
+    process.env.MERGE_MODEL ??
+    'gpt-4o-mini';
+  const today = new Date().toISOString().split('T')[0];
+
+  const dailyDir = path.resolve(workspacePath, 'wiki', 'daily');
+  const coreDir = path.resolve(workspacePath, 'wiki', 'core');
+  const corePath = path.join(coreDir, 'knowledge.md');
+  const backupDir = path.join(coreDir, 'backups');
+  const errorLog = path.resolve(workspacePath, 'wiki', 'distill-errors.log');
+
+  mkdirSync(coreDir, { recursive: true });
+  mkdirSync(backupDir, { recursive: true });
+
+  // ── Step 1: 读取本周 Layer 1 文件 ─────────────
+
+  const weekDates = getWeekDateRange(weekStart, weekEnd);
+  const weekFiles = weekDates
+    .map((d) => ({ date: d, filePath: path.join(dailyDir, `${d}.md`) }))
+    .filter(({ filePath }) => existsSync(filePath));
+
+  console.log(
+    `[wiki-merge] 日期范围: ${weekDates[0]} ~ ${weekDates[weekDates.length - 1]}，` +
+    `找到 ${weekFiles.length}/${weekDates.length} 天的记忆文件`
+  );
+
+  if (weekFiles.length === 0) {
+    console.log('[wiki-merge] 本周没有 Layer 1 文件，跳过合并');
+    return { success: true, weekFilesCount: 0, previousCoreChars: 0, newCoreChars: 0 };
+  }
+
+  // 拼接本周内容
+  const weekContent = weekFiles
+    .map(({ date, filePath }) =>
+      `\n### ${date}\n${readFileSync(filePath, 'utf-8')}`
+    )
+    .join('\n---\n');
+
+  // ── Step 2: 读取现有 Layer 2 ──────────────────
+
+  const existingCore = existsSync(corePath) ? readFileSync(corePath, 'utf-8') : '';
+  const previousCoreChars = existingCore.length;
+  const protectedItems = extractProtectedItems(existingCore);
+
+  if (protectedItems.length > 0) {
+    console.log(`[wiki-merge] 检测到 ${protectedItems.length} 条受保护条目`);
+  }
+
+  // ── Step 3: Dry Run 模式 ──────────────────────
+
+  const prompt = buildMergePrompt(weekContent, existingCore, protectedItems, today);
+
+  if (dryRun) {
+    console.log('[wiki-merge] DRY RUN - Prompt 预览:\n');
+    console.log(prompt.substring(0, 1000) + '\n...');
+    return {
+      success: true,
+      weekFilesCount: weekFiles.length,
+      previousCoreChars,
+      newCoreChars: 0,
+    };
+  }
+
+  // ── Step 4: 备份现有 Layer 2 ──────────────────
+
+  let backupPath: string | undefined;
+  if (existsSync(corePath)) {
+    backupPath = path.join(backupDir, `knowledge-${today}.md`);
+    copyFileSync(corePath, backupPath);
+    console.log(`[wiki-merge] 已备份 → ${backupPath}`);
+    cleanOldBackups(backupDir, 30);
+  }
+
+  // ── Step 5: 调用 LLM 合并 ─────────────────────
+
+  if (!apiKey) {
+    const msg = `[${today}] OPENAI_API_KEY 未配置，wiki-merge 失败\n`;
+    writeFileSync(errorLog, msg, { flag: 'a' });
+    return {
+      success: false,
+      error: 'missing_api_key',
+      weekFilesCount: weekFiles.length,
+      previousCoreChars,
+      newCoreChars: 0,
+    };
+  }
+
+  let merged: string;
+
+  try {
+    merged = await callLLM(prompt, apiKey, baseUrl, model);
+  } catch (err) {
+    const msg = `[${today}] wiki-merge LLM 调用失败: ${(err as Error).message}\n`;
+    writeFileSync(errorLog, msg, { flag: 'a' });
+    console.error('[wiki-merge] LLM 调用失败，保留旧版 Layer 2 不变');
+    return {
+      success: false,
+      error: (err as Error).message,
+      backupPath,
+      weekFilesCount: weekFiles.length,
+      previousCoreChars,
+      newCoreChars: 0,
+    };
+  }
+
+  // ── Step 6: 验证输出质量 ──────────────────────
+
+  const validation = validateMergeOutput(merged);
+
+  if (!validation.valid) {
+    const msg = `[${today}] wiki-merge 输出质量不达标: ${validation.reason}\n`;
+    writeFileSync(errorLog, msg, { flag: 'a' });
+    console.warn(`[wiki-merge] 输出质量不达标（${validation.reason}），保留旧版 Layer 2`);
+    return {
+      success: false,
+      error: `quality_check_failed: ${validation.reason}`,
+      backupPath,
+      weekFilesCount: weekFiles.length,
+      previousCoreChars,
+      newCoreChars: 0,
+    };
+  }
+
+  // ── Step 7: 写入新 Layer 2 ────────────────────
+
+  writeFileSync(corePath, merged, 'utf-8');
+
+  const newCoreChars = merged.length;
+  const itemsCount = countItems(merged);
+
+  console.log(
+    `[wiki-merge] ✅ 合并完成 → ${corePath}\n` +
+    `  本周文件: ${weekFiles.length} 天 | ` +
+    `  旧核心: ${previousCoreChars} 字 → 新核心: ${newCoreChars} 字 | ` +
+    `  条目数: ${itemsCount}`
+  );
+
+  // ── Step 8: 连续失败检测 ──────────────────────
+  try {
+    if (existsSync(errorLog)) {
+      const recentErrors = readFileSync(errorLog, 'utf-8')
+        .split('\n')
+        .filter((l) => l.includes('wiki-merge'))
+        .slice(-3);
+      if (recentErrors.length >= 3) {
+        console.error(
+          '[wiki-merge] ⚠️  检测到连续 3 次合并失败，请人工介入检查 LLM 服务状态'
+        );
+      }
+    }
+  } catch {
+    // 日志读取失败不影响主流程
+  }
+
+  return {
+    success: true,
+    outputPath: corePath,
+    backupPath,
+    weekFilesCount: weekFiles.length,
+    previousCoreChars,
+    newCoreChars,
+    itemsCount,
+  };
+}
+
+export default execute;
