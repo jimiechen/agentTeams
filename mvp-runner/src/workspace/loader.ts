@@ -17,6 +17,7 @@ export interface WorkspaceConfig {
 }
 
 const WORKSPACES_DIR = path.resolve('..', 'workspaces');
+const WIKIBOT_ENV_FILE = path.join(WORKSPACES_DIR, 'WikiBot', '.env.wikibot');
 
 /**
  * 扫描并加载所有工作空间配置
@@ -96,4 +97,32 @@ export function findWorkspaceByMention(workspaces: WorkspaceConfig[], text: stri
  */
 export function getDefaultWorkspace(workspaces: WorkspaceConfig[]): WorkspaceConfig | null {
   return workspaces[0] || null;
+}
+
+/**
+ * 加载WikiBot配置
+ */
+export function loadWikiBotConfig(): { appId: string; appSecret: string; chatId: string; keyword: string } | null {
+  if (!existsSync(WIKIBOT_ENV_FILE)) {
+    debug('WikiBot env file not found: %s', WIKIBOT_ENV_FILE);
+    return null;
+  }
+
+  const originalEnv = { ...process.env };
+  config({ path: WIKIBOT_ENV_FILE, override: true });
+
+  const appId = process.env.LARK_APP_ID;
+  const appSecret = process.env.LARK_APP_SECRET;
+  const chatId = process.env.LARK_CHAT_ID;
+  const keyword = process.env.LARK_MENTION_KEYWORD;
+
+  process.env = originalEnv;
+
+  if (!appId || !appSecret || !chatId || !keyword) {
+    debug('Invalid WikiBot config');
+    return null;
+  }
+
+  debug('Loaded WikiBot config: keyword=%s', keyword);
+  return { appId, appSecret, chatId, keyword };
 }

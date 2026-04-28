@@ -171,7 +171,7 @@ export class WorkspaceLogger {
   /**
    * 记录任务生命周期
    */
-  logTaskLifecycle(runId: string, phase: 'start' | 'ack' | 'switch' | 'fill' | 'submit' | 'wait' | 'complete' | 'error', meta?: any) {
+  logTaskLifecycle(runId: string, phase: 'start' | 'ack' | 'switch' | 'fill' | 'submit' | 'wait' | 'complete' | 'error' | 'wiki-inject' | 'wiki-inject-failed', meta?: any) {
     this.info(`Task ${phase}`, {
       runId,
       phase,

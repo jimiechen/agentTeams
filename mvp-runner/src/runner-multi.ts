@@ -39,7 +39,7 @@ export class MultiTaskRunner {
   /** 初始化所有工作空间的logger */
   private initWorkspaceLoggers(): void {
     for (const ws of this.workspaces) {
-      const logger = loggerManager.getLogger(ws.path, 'lark');
+      const logger = loggerManager.getLogger(ws.dir, 'lark');
       this.loggers.set(ws.name, logger);
 
       // 为对应的bot设置logger
@@ -166,7 +166,7 @@ export class MultiTaskRunner {
         let enrichedPrompt = parsed.prompt;
         if (matchedWorkspace) {
           try {
-            enrichedPrompt = await injectWikiContext(matchedWorkspace.path, parsed.prompt);
+            enrichedPrompt = await injectWikiContext(matchedWorkspace.dir, parsed.prompt);
             logger?.logTaskLifecycle(runId, 'wiki-inject', {
               originalLength: parsed.prompt.length,
               enrichedLength: enrichedPrompt.length,
