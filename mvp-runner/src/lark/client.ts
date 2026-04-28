@@ -12,13 +12,18 @@ export interface LarkInbound {
   mentionedKeywords: string[];
 }
 
-export type LarkHandler = (msg: LarkInbound) => Promise<void> | void;
+export type LarkHandler = (msg: LarkInbound, keyword: string) => Promise<void> | void;
 
 export class LarkBot {
   private client: lark.Client;
   private wsClient: lark.WSClient;
   private chatId: string;
   private mentionKeyword: string;
+  
+  /** 关键字访问器 */
+  get keyword(): string {
+    return this.mentionKeyword;
+  }
 
   constructor(opts: {
     appId: string;
@@ -98,7 +103,7 @@ export class LarkBot {
             inbound.messageId, inbound.senderId, inbound.text.slice(0, 80));
 
           // 异步处理，立即 ack 飞书服务器（prevent WS 心跳超时）
-          Promise.resolve(handler(inbound)).catch(err => {
+          Promise.resolve(handler(inbound, this.mentionKeyword)).catch(err => {
             log('handler error: %s', (err as Error).message);
           });
 

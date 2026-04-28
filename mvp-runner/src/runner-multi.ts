@@ -12,85 +12,108 @@ import { withChatMutex } from './mutex.js';
 import { parseCommand } from './lark/parser.js';
 import type { LarkBot, LarkInbound } from './lark/client.js';
 import type { AppConfig } from './config.js';
+import type { WorkspaceConfig } from './workspace/loader.js';
+import { findWorkspaceByMention } from './workspace/loader.js';
 
-const log = debug('mvp:runner-lark');
+const log = debug('mvp:runner-multi');
 
-// 任务到工作空间的映射
-const TASK_WORKSPACE_MAP: Record<string, string> = {
-  'PMCLI': 'd:\\TraeProject\\agentTeams\\workspaces\\PMCLI',
-  'DEVCLI': 'd:\\TraeProject\\agentTeams\\workspaces\\DEVCLI',
-};
+// 工作空间基础目录
+const WORKSPACES_BASE_DIR = path.resolve('..', 'workspaces');
 
-export class LarkRunner {
+export class MultiTaskRunner {
   private runsDir: string;
 
   constructor(
     private cfg: AppConfig,
     private cdp: CDPClient,
-    private lark: LarkBot,
+    private bots: LarkBot[],
+    private workspaces: WorkspaceConfig[],
   ) {
     this.runsDir = path.resolve('./runs');
     mkdirSync(this.runsDir, { recursive: true });
   }
 
-  /** 注册到 LarkBot.start(handler) 的飞书消息回调。 */
-  handle = async (msg: LarkInbound): Promise<void> => {
+  /** 通用消息处理器 */
+  handle = async (msg: LarkInbound, botKeyword: string): Promise<void> => {
     // 1. 白名单
     const allowed = this.cfg.pmbot.allowed_users;
     if (allowed.length > 0 && !allowed.includes(msg.senderId)) {
       log('reject sender=%s (not in allowlist)', msg.senderId);
-      await this.lark.reply(msg.messageId, `⛔ 权限不足`);
+      await this.replyByKeyword(botKeyword, msg.messageId, `⛔ 权限不足`);
       return;
     }
 
     // 2. 解析指令
-    const parsed = parseCommand(msg.text, this.cfg.pmbot.default_slot, this.cfg.pmbot.mention_keyword);
+    const parsed = parseCommand(msg.text, this.cfg.pmbot.default_slot, botKeyword);
     if (!parsed || !parsed.prompt) {
-      await this.lark.reply(msg.messageId,
+      await this.replyByKeyword(botKeyword, msg.messageId,
         `⚠️ 指令为空。用法：\n` +
         `  @PMCLI <prompt> - 使用PMCLI执行任务\n` +
-        `  @DEVCLI <prompt> - 使用DEVCLI执行任务\n` +
-        `  @PMCLI #<slot编号> <prompt> - 指定slot`);
+        `  @DEVCLI <prompt> - 使用DEVCLI执行任务`);
       return;
     }
 
-    // 3. 扫描任务列表，匹配mention的任务
+    // 3. 扫描当前任务列表
     let targetSlot = parsed.slot;
-    let targetTaskName = parsed.mentionTask;
-    let taskInfo: TaskInfo | null = null;
+    let targetTaskName: string | null = null;
+    let matchedWorkspace: WorkspaceConfig | null = null;
 
     try {
       const tasks = await scanTasks(this.cdp);
+      log('Scanned %d tasks: %s', tasks.length, tasks.map(t => t.name).join(', '));
+
+      // 3.1 根据mention查找对应的工作空间
+      const mentionedWs = findWorkspaceByMention(this.workspaces, msg.text);
       
-      if (targetTaskName) {
-        // 根据mention的任务名查找slot
-        const matchedSlot = findTaskSlot(tasks, targetTaskName);
+      if (mentionedWs) {
+        // 3.2 在工作空间中查找mention的任务名对应的slot
+        const matchedSlot = findTaskSlot(tasks, mentionedWs.name);
         if (matchedSlot >= 0) {
           targetSlot = matchedSlot;
-          taskInfo = tasks.find(t => t.index === matchedSlot) || null;
-          log('Matched task "%s" to slot #%d, status=%s', targetTaskName, targetSlot, taskInfo?.status);
+          targetTaskName = mentionedWs.name;
+          matchedWorkspace = mentionedWs;
+          log('Matched mention "%s" to task "%s" at slot #%d', mentionedWs.mentionKeyword, targetTaskName, targetSlot);
         } else {
-          log('Task "%s" not found in task list, using default slot #%d', targetTaskName, targetSlot);
-          await this.lark.reply(msg.messageId, `⚠️ 未找到任务 "${targetTaskName}"，使用默认slot #${targetSlot}`);
+          // mention了但任务列表中没有，尝试使用当前选中的任务
+          const selectedTask = tasks.find(t => t.isSelected);
+          if (selectedTask) {
+            targetTaskName = selectedTask.name;
+            targetSlot = selectedTask.index;
+            matchedWorkspace = this.workspaces.find(w => w.name === targetTaskName) || mentionedWs;
+            log('Task "%s" not in list, using selected task "%s" at slot #%d', mentionedWs.name, targetTaskName, targetSlot);
+          } else {
+            // 既没有找到任务，也没有选中的任务，使用默认
+            matchedWorkspace = mentionedWs;
+            log('No matching task found for "%s", using default slot #%d', mentionedWs.name, targetSlot);
+          }
         }
       } else {
-        // 没有mention具体任务，使用当前选中的任务
+        // 3.3 没有mention任何工作空间，使用当前选中的任务
         const selectedTask = tasks.find(t => t.isSelected);
         if (selectedTask) {
           targetTaskName = selectedTask.name;
-          taskInfo = selectedTask;
-          log('No specific task mentioned, using currently selected task: "%s" slot #%d', targetTaskName, targetSlot);
+          targetSlot = selectedTask.index;
+          matchedWorkspace = this.workspaces.find(w => w.name === targetTaskName) || null;
+          log('No mention found, using selected task "%s" at slot #%d', targetTaskName, targetSlot);
+        } else {
+          // 使用第一个工作空间作为默认
+          matchedWorkspace = this.workspaces[0];
+          targetTaskName = matchedWorkspace.name;
+          log('No task selected, using default workspace "%s"', matchedWorkspace.name);
         }
       }
     } catch (err) {
       log('Failed to scan tasks: %s', (err as Error).message);
+      // 扫描失败时使用默认
+      matchedWorkspace = this.workspaces[0];
+      targetTaskName = matchedWorkspace?.name || null;
     }
 
     // 4. 立即 ACK
     const taskDisplay = targetTaskName || `slot #${targetSlot}`;
+    const wsDisplay = matchedWorkspace ? `[${matchedWorkspace.name}] ` : '';
     if (this.cfg.pmbot.ack_on_receive) {
-      await this.lark.reply(msg.messageId,
-        `✅ 已收到 (${taskDisplay})，排队中…`);
+      await this.replyByKeyword(botKeyword, msg.messageId, `✅ ${wsDisplay}已收到 (${taskDisplay})，排队中…`);
     }
 
     // 5. 加锁执行
@@ -102,7 +125,7 @@ export class LarkRunner {
         log('[%s] task=%s slot=%d prompt="%s"', runId, targetTaskName || 'unknown', targetSlot, parsed.prompt.slice(0, 40));
 
         // 切换到目标slot
-        await this.lark.sendText(`🔀 切换到 ${taskDisplay}…`);
+        await this.sendByKeyword(botKeyword, `🔀 切换到 ${taskDisplay}…`);
         await switchTask(this.cdp, targetSlot);
 
         // 填充提示词
@@ -110,20 +133,22 @@ export class LarkRunner {
 
         // 提交
         await submit(this.cdp);
-        await this.lark.sendText(`📤 已提交，等待 AI 响应…`);
+        await this.sendByKeyword(botKeyword, `📤 已提交，等待 AI 响应…`);
 
-        // 等待响应（使用任务名进行心跳检查）
+        // 等待响应
         const response = await waitResponse(this.cdp, {
           timeoutMs: this.cfg.pmbot.response_timeout_ms,
-          taskName: targetTaskName || 'PMCLI', // 使用任务名进行心跳检查
+          taskName: targetTaskName || undefined,
         });
 
         const duration = Date.now() - startedAt;
-        
+
         // 保存到对应工作空间
-        this.persistToWorkspace(runId, targetTaskName, parsed, response, duration, msg.senderId);
-        
-        // 同时保存到默认runs目录
+        if (matchedWorkspace) {
+          this.persistToWorkspace(runId, matchedWorkspace.name, parsed, response, duration, msg.senderId, targetSlot);
+        }
+
+        // 同时保存到runs目录
         this.persist(runId, parsed, response, duration, msg.senderId, targetTaskName, targetSlot);
 
         const maxChars = this.cfg.pmbot.response_max_chars;
@@ -135,20 +160,18 @@ export class LarkRunner {
         // 发送结果到群聊
         log('[%s] sending reply to group, length=%d', runId, body.length);
         try {
-          await this.lark.replyPost(
-            msg.messageId,
+          await this.replyByKeyword(botKeyword, msg.messageId,
             `🤖 ${taskDisplay} 响应 (${Math.round(duration / 1000)}s)`,
-            body,
+            body
           );
           log('[%s] reply sent successfully', runId);
         } catch (replyErr) {
           log('[%s] replyPost failed: %s', runId, (replyErr as Error).message);
-          // 降级为普通文本回复
           try {
-            await this.lark.reply(msg.messageId, `🤖 ${taskDisplay} 响应:\n${body.slice(0, 1000)}`);
+            await this.replyByKeyword(botKeyword, msg.messageId, `🤖 ${taskDisplay} 响应:\n${body.slice(0, 1000)}`);
             log('[%s] fallback reply sent', runId);
           } catch (fallbackErr) {
-            log('[%s] fallback reply also failed: %s', runId, (fallbackErr as Error).message);
+            log('[%s] fallback reply also failed: %s', runId, (err as Error).message);
           }
         }
 
@@ -157,39 +180,57 @@ export class LarkRunner {
     } catch (err) {
       const errMsg = (err as Error).message;
       log('[%s] failed: %s', runId, errMsg);
-      await this.lark.reply(msg.messageId, `❌ 执行失败：${errMsg}`);
+      await this.replyByKeyword(botKeyword, msg.messageId, `❌ 执行失败：${errMsg}`);
       this.persist(runId, parsed, `<ERROR: ${errMsg}>`, Date.now() - startedAt, msg.senderId, targetTaskName, targetSlot);
     }
   };
 
-  /**
-   * 保存到对应工作空间
-   */
+  /** 根据keyword查找对应的bot并发送回复 */
+  private async replyByKeyword(keyword: string, messageId: string, text: string, body?: string): Promise<void> {
+    const bot = this.bots.find(b => b.keyword === keyword);
+    if (!bot) {
+      log('Bot not found for keyword: %s', keyword);
+      return;
+    }
+    
+    if (body) {
+      await bot.replyPost(messageId, text, body);
+    } else {
+      await bot.reply(messageId, text);
+    }
+  }
+
+  /** 根据keyword查找对应的bot并发送文本 */
+  private async sendByKeyword(keyword: string, text: string): Promise<void> {
+    const bot = this.bots.find(b => b.keyword === keyword);
+    if (!bot) {
+      log('Bot not found for keyword: %s', keyword);
+      return;
+    }
+    await bot.sendText(text);
+  }
+
+  /** 保存到工作空间 */
   private persistToWorkspace(
     runId: string,
-    taskName: string | undefined,
+    taskName: string,
     parsed: { slot: number; prompt: string; raw: string },
     response: string,
     durationMs: number,
     senderId: string,
+    actualSlot: number,
   ): void {
-    const task = taskName || 'UNKNOWN';
-    const workspaceDir = TASK_WORKSPACE_MAP[task];
-    
-    if (!workspaceDir) {
-      log('No workspace configured for task: %s', task);
-      return;
-    }
+    const workspaceDir = path.join(WORKSPACES_BASE_DIR, taskName);
 
     try {
       mkdirSync(workspaceDir, { recursive: true });
-      
+
       const file = path.join(workspaceDir, `${runId}.md`);
       const md = [
         `# Run ${runId}`,
         ``,
-        `- **Task**: ${task}`,
-        `- **Slot**: ${parsed.slot}`,
+        `- **Task**: ${taskName}`,
+        `- **Slot**: ${actualSlot}`,
         `- **Sender**: ${senderId}`,
         `- **Duration**: ${durationMs} ms`,
         `- **Workspace**: ${workspaceDir}`,
@@ -203,7 +244,7 @@ export class LarkRunner {
         response,
         ``,
       ].join('\n');
-      
+
       writeFileSync(file, md, 'utf-8');
       log('persisted to workspace → %s', file);
     } catch (err) {
@@ -211,25 +252,21 @@ export class LarkRunner {
     }
   }
 
-  /**
-   * 保存到runs目录（按任务分子目录）
-   * 例如：runs/PMCLI/2026-04-27Txxxxx.md
-   */
+  /** 保存到runs目录（按任务分子目录） */
   private persist(
     runId: string,
     parsed: { slot: number; prompt: string; raw: string },
     response: string,
     durationMs: number,
     senderId: string,
-    taskName?: string,
+    taskName?: string | null,
     actualSlot?: number,
   ): void {
     const task = taskName || 'unknown';
     const taskDir = path.join(this.runsDir, task);
-    
-    // 创建任务子目录
+
     mkdirSync(taskDir, { recursive: true });
-    
+
     const file = path.join(taskDir, `${runId}.md`);
     const md = [
       `# Run ${runId}`,
@@ -244,11 +281,11 @@ export class LarkRunner {
       `> ${parsed.prompt.replace(/\n/g, '\n> ')}`,
       ``,
       `## Response`,
-      ``,
-      response,
-      ``,
-    ].join('\n');
-    writeFileSync(file, md, 'utf-8');
-    log('persisted → %s', file);
+        ``,
+        response,
+        ``,
+      ].join('\n');
+      writeFileSync(file, md, 'utf-8');
+      log('persisted → %s', file);
   }
 }
