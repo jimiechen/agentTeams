@@ -15,6 +15,7 @@ import type { AppConfig } from './config.js';
 import type { WorkspaceConfig } from './workspace/loader.js';
 import { findWorkspaceByMention } from './workspace/loader.js';
 import { WorkspaceLogger, loggerManager } from './utils/workspace-logger.js';
+import { injectWikiContext } from './skills/wiki-inject.js';
 
 const log = debug('mvp:runner-multi');
 
@@ -161,9 +162,27 @@ export class MultiTaskRunner {
         await this.sendByKeyword(botKeyword, `🔀 切换到 ${taskDisplay}…`);
         await switchTask(this.cdp, targetSlot);
 
+        // 注入Wiki Context（如果工作空间有wiki配置）
+        let enrichedPrompt = parsed.prompt;
+        if (matchedWorkspace) {
+          try {
+            enrichedPrompt = await injectWikiContext(matchedWorkspace.path, parsed.prompt);
+            logger?.logTaskLifecycle(runId, 'wiki-inject', {
+              originalLength: parsed.prompt.length,
+              enrichedLength: enrichedPrompt.length,
+            });
+          } catch (injectErr) {
+            // 注入失败不阻断主流程，使用原始prompt
+            log('[%s] wiki-inject failed: %s, using raw prompt', runId, (injectErr as Error).message);
+            logger?.logTaskLifecycle(runId, 'wiki-inject-failed', {
+              error: (injectErr as Error).message,
+            });
+          }
+        }
+
         // 填充提示词
-        await fillPrompt(this.cdp, parsed.prompt);
-        logger?.logTaskLifecycle(runId, 'fill', { promptLength: parsed.prompt.length });
+        await fillPrompt(this.cdp, enrichedPrompt);
+        logger?.logTaskLifecycle(runId, 'fill', { promptLength: enrichedPrompt.length });
 
         // 提交
         await submit(this.cdp);
