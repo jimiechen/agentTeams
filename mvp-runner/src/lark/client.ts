@@ -153,19 +153,6 @@ export class LarkBot {
       },
     });
 
-    // 监听WS连接事件
-    this.wsClient.on('connect', () => {
-      this.logger?.info('Lark WebSocket connected');
-    });
-
-    this.wsClient.on('disconnect', () => {
-      this.logger?.warn('Lark WebSocket disconnected');
-    });
-
-    this.wsClient.on('error', (err: Error) => {
-      this.logger?.error('Lark WebSocket error', { error: err.message });
-    });
-
     await this.wsClient.start({ eventDispatcher: dispatcher });
     log('lark ws started, chat_id=%s keyword=@%s', this.chatId, this.mentionKeyword);
     this.logger?.info('Lark WebSocket started', { chatId: this.chatId, keyword: this.mentionKeyword });

@@ -7,26 +7,31 @@ import { LarkBot } from './lark/client.js';
 import { MultiTaskRunner } from './runner-multi.js';
 import { loadWorkspaces, loadWikiBotConfig } from './workspace/loader.js';
 import { WikiBotHandler } from './wikibot/index.js';
+import { bootInfo, bootError, bootWarn } from './utils/boot-logger.js';
 
 const log = debug('mvp:boot');
 
 async function main() {
-  // 1. 加载基础配置
-  const cfg = loadConfig();
-  
-  // 2. 加载所有工作空间
-  const workspaces = loadWorkspaces();
-  if (workspaces.length === 0) {
-    console.error('[FATAL] No workspaces found');
-    process.exit(1);
-  }
-  
-  log('Loaded %d workspaces: %s', workspaces.length, workspaces.map(w => w.name).join(', '));
+  try {
+    bootInfo('=== Multi-Task Runner 启动 ===');
 
-  // 3. 连接 CDP（共享一个CDP连接）
-  const cdp = new CDPClient({ host: cfg.cdp.host, port: cfg.cdp.port });
-  await cdp.connect();
-  log('✅ CDP connected');
+    // 1. 加载基础配置
+    const cfg = loadConfig();
+    bootInfo('配置加载完成');
+
+    // 2. 加载所有工作空间
+    const workspaces = loadWorkspaces();
+    if (workspaces.length === 0) {
+      bootError('[FATAL] No workspaces found');
+      process.exit(1);
+    }
+
+    bootInfo(`Loaded ${workspaces.length} workspaces: ${workspaces.map(w => w.name).join(', ')}`);
+
+    // 3. 连接 CDP（共享一个CDP连接）
+    const cdp = new CDPClient({ host: cfg.cdp.host, port: cfg.cdp.port });
+    await cdp.connect();
+    bootInfo('CDP connected');
 
   // 4. 为每个工作空间创建Bot
   const bots: LarkBot[] = [];
@@ -84,17 +89,23 @@ async function main() {
   }
 
   for (const bot of allBots) {
-    await bot.start(async (msg, keyword) => {
-      // 优先检查是否应由WikiBot处理
-      if (wikiBotEnabled && wikiBotHandler && wikiBotHandler.shouldHandle(msg)) {
-        await wikiBotHandler.handle(msg);
-        return;
-      }
-      // 否则交给主runner处理
-      await runner.handle(msg, keyword);
-    });
+    try {
+      await bot.start(async (msg, keyword) => {
+        // 优先检查是否应由WikiBot处理
+        if (wikiBotEnabled && wikiBotHandler && wikiBotHandler.shouldHandle(msg)) {
+          await wikiBotHandler.handle(msg);
+          return;
+        }
+        // 否则交给主runner处理
+        await runner.handle(msg, keyword);
+      });
+      bootInfo(`LarkBot started: ${bot.keyword}`);
+    } catch (err) {
+      bootError(`Failed to start LarkBot ${bot.keyword}`, { error: (err as Error).message });
+      throw err;
+    }
   }
-  log('✅ All Lark WS listening (%d bots)', allBots.length);
+  bootInfo(`All Lark WS listening (${allBots.length} bots)`);
 
   // 7. 上线通知
   if (cfg.pmbot.online_notice) {
@@ -105,28 +116,34 @@ async function main() {
           `🟢 ${bot.keyword} Runner 上线\n` +
           `用法: @${bot.keyword} <prompt>${wikiHint}`
         );
+        bootInfo(`Online notice sent: ${bot.keyword}`);
       } catch (err) {
-        log('send online notice failed for %s: %s', bot.keyword, (err as Error).message);
+        bootWarn(`send online notice failed for ${bot.keyword}`, { error: (err as Error).message });
       }
     }
   }
 
   // 8. 优雅退出
   const shutdown = async (signal: string) => {
-    log('%s received, shutting down', signal);
+    bootInfo(`${signal} received, shutting down`);
     for (const bot of allBots) {
       try { await bot.sendText(`🔴 ${bot.keyword} Runner 下线`); } catch {}
     }
     await cdp.disconnect();
+    bootInfo('CDP disconnected, exit');
     process.exit(0);
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  log('🚀 Multi-Task Runner is up with %d bots. Send "@<keyword> <prompt>" to test.', bots.length);
+  bootInfo(`🚀 Multi-Task Runner is up with ${allBots.length} bots`);
+  } catch (err) {
+    bootError('[FATAL] Failed to boot', { error: (err as Error).message, stack: (err as Error).stack });
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {
-  console.error('[FATAL] Failed to boot:', err);
+  bootError('[FATAL] Unhandled error in main()', { error: (err as Error).message, stack: (err as Error).stack });
   process.exit(1);
 });
