@@ -3,6 +3,9 @@
 
 import createDebug from 'debug';
 import { CDPClient } from '../cdp/client.js';
+import type { WorkspaceLogger } from '../utils/workspace-logger.js';
+import { isButtonAllowed, requiresConfirmation } from './button-whitelist.js';
+import { recoveryRateLimiter } from '../utils/rate-limiter.js';
 
 const debug = createDebug('mvp:recover');
 
@@ -12,6 +15,11 @@ export interface RecoveryResult {
   reason?: string;
 }
 
+export interface RecoveryOptions {
+  taskId?: string;
+  logger?: WorkspaceLogger;
+}
+
 /**
  * 恢复终端卡死
  * 点击"后台运行"或"取消"按钮
@@ -19,8 +27,39 @@ export interface RecoveryResult {
 export async function recoverTerminalHang(
   cdp: CDPClient,
   policy: 'background' | 'cancel' = 'background',
+  options?: RecoveryOptions,
 ): Promise<RecoveryResult> {
   debug('Recovering terminal hang with policy: %s', policy);
+  const startTime = Date.now();
+
+  // 1. 按钮白名单检查
+  const selector = '.icd-btn.icd-btn-tertiary';
+  const whitelistCheck = isButtonAllowed(selector);
+  if (!whitelistCheck.allowed) {
+    debug('Button not in whitelist: %s', whitelistCheck.reason);
+    options?.logger?.logRecoveryAudit({
+      taskId: options?.taskId || 'unknown',
+      action: 'click-stop',
+      result: 'skipped',
+      reason: whitelistCheck.reason || '不在白名单',
+      durationMs: 0,
+    });
+    return { success: false, action: policy, reason: whitelistCheck.reason };
+  }
+
+  // 2. 速率限制检查
+  const rateCheck = recoveryRateLimiter.checkLimit('recovery', 5, 3600000);
+  if (!rateCheck.allowed) {
+    debug('Rate limit exceeded: %s', rateCheck.reason);
+    options?.logger?.logRecoveryAudit({
+      taskId: options?.taskId || 'unknown',
+      action: 'click-stop',
+      result: 'skipped',
+      reason: rateCheck.reason || '速率限制',
+      durationMs: 0,
+    });
+    return { success: false, action: policy, reason: rateCheck.reason };
+  }
 
   const selectorText = policy === 'background' ? '后台运行' : '取消';
 
@@ -66,8 +105,23 @@ export async function recoverTerminalHang(
     
     if (!verified) {
       debug('Terminal hang recovery not verified');
-      return { success: false, action: policy, reason: 'not-verified' };
+      result.success = false;
+      result.reason = 'not-verified';
     }
+  }
+
+  // 记录审计日志
+  options?.logger?.logRecoveryAudit({
+    taskId: options?.taskId || 'unknown',
+    action: policy === 'background' ? 'click-stop' : 'send-esc',
+    result: result.success ? 'success' : 'failed',
+    reason: result.reason || '执行成功',
+    durationMs: Date.now() - startTime,
+  });
+
+  // 记录速率限制操作
+  if (result.success) {
+    recoveryRateLimiter.recordOperation('recovery');
   }
 
   debug('Terminal hang recovery result: %o', result);
@@ -81,8 +135,10 @@ export async function recoverTerminalHang(
 export async function recoverDeleteModal(
   cdp: CDPClient,
   policy: 'keep' | 'delete' = 'keep',
+  options?: RecoveryOptions,
 ): Promise<RecoveryResult> {
   debug('Recovering delete modal with policy: %s', policy);
+  const startTime = Date.now();
 
   const selector = policy === 'delete'
     ? '.icd-delete-files-command-card-v2-actions-delete'
@@ -118,9 +174,19 @@ export async function recoverDeleteModal(
     
     if (!verified) {
       debug('Delete modal recovery not verified');
-      return { success: false, action: policy, reason: 'not-verified' };
+      result.success = false;
+      result.reason = 'not-verified';
     }
   }
+
+  // 记录审计日志
+  options?.logger?.logRecoveryAudit({
+    taskId: options?.taskId || 'unknown',
+    action: policy === 'delete' ? 'click-delete' : 'click-retain',
+    result: result.success ? 'success' : 'failed',
+    reason: result.reason || '执行成功',
+    durationMs: Date.now() - startTime,
+  });
 
   debug('Delete modal recovery result: %o', result);
   return result;
@@ -133,8 +199,10 @@ export async function recoverDeleteModal(
 export async function recoverOverwriteModal(
   cdp: CDPClient,
   policy: 'keep' | 'overwrite' = 'keep',
+  options?: RecoveryOptions,
 ): Promise<RecoveryResult> {
   debug('Recovering overwrite modal with policy: %s', policy);
+  const startTime = Date.now();
 
   const selector = policy === 'overwrite'
     ? '.icd-overwrite-files-command-card-v2-actions-overwrite'
@@ -170,9 +238,19 @@ export async function recoverOverwriteModal(
     
     if (!verified) {
       debug('Overwrite modal recovery not verified');
-      return { success: false, action: policy, reason: 'not-verified' };
+      result.success = false;
+      result.reason = 'not-verified';
     }
   }
+
+  // 记录审计日志
+  options?.logger?.logRecoveryAudit({
+    taskId: options?.taskId || 'unknown',
+    action: policy === 'overwrite' ? 'click-delete' : 'click-retain',
+    result: result.success ? 'success' : 'failed',
+    reason: result.reason || '执行成功',
+    durationMs: Date.now() - startTime,
+  });
 
   debug('Overwrite modal recovery result: %o', result);
   return result;
@@ -182,8 +260,12 @@ export async function recoverOverwriteModal(
  * 恢复模型停滞
  * 点击停止按钮
  */
-export async function recoverModelStalled(cdp: CDPClient): Promise<RecoveryResult> {
+export async function recoverModelStalled(
+  cdp: CDPClient,
+  options?: RecoveryOptions,
+): Promise<RecoveryResult> {
   debug('Recovering model stalled');
+  const startTime = Date.now();
 
   // 先检查按钮状态
   const status = await cdp.evaluate<{
@@ -201,11 +283,27 @@ export async function recoverModelStalled(cdp: CDPClient): Promise<RecoveryResul
   `);
 
   if (!status.found) {
-    return { success: false, action: 'stop', reason: 'button-not-found' };
+    const result = { success: false, action: 'stop', reason: 'button-not-found' };
+    options?.logger?.logRecoveryAudit({
+      taskId: options?.taskId || 'unknown',
+      action: 'click-stop',
+      result: 'failed',
+      reason: result.reason,
+      durationMs: Date.now() - startTime,
+    });
+    return result;
   }
 
   if (!status.isStop) {
-    return { success: false, action: 'stop', reason: 'not-in-stop-state' };
+    const result = { success: false, action: 'stop', reason: 'not-in-stop-state' };
+    options?.logger?.logRecoveryAudit({
+      taskId: options?.taskId || 'unknown',
+      action: 'click-stop',
+      result: 'skipped',
+      reason: result.reason,
+      durationMs: Date.now() - startTime,
+    });
+    return result;
   }
 
   // 点击停止按钮
@@ -242,9 +340,19 @@ export async function recoverModelStalled(cdp: CDPClient): Promise<RecoveryResul
     
     if (!verified) {
       debug('Model stalled recovery not verified');
-      return { success: false, action: 'stop', reason: 'not-verified' };
+      result.success = false;
+      result.reason = 'not-verified';
     }
   }
+
+  // 记录审计日志
+  options?.logger?.logRecoveryAudit({
+    taskId: options?.taskId || 'unknown',
+    action: 'click-stop',
+    result: result.success ? 'success' : 'failed',
+    reason: result.reason || '执行成功',
+    durationMs: Date.now() - startTime,
+  });
 
   debug('Model stalled recovery result: %o', result);
   return result;

@@ -6,6 +6,7 @@ import { CDPClient } from '../cdp/client.js';
 import { ResponseTimeoutError } from '../errors.js';
 import { captureSnapshot, isModelStalled, isTaskCompleted, detectBlocking, SystemSnapshot } from './state-probe.js';
 import { recoverTerminalHang, recoverDeleteModal, recoverOverwriteModal, recoverModelStalled } from './recover.js';
+import { loadSignalState, updateSignalState, resetSignalState } from './signal-persist.js';
 import type { WorkspaceLogger } from '../utils/workspace-logger.js';
 
 const debug = createDebug('mvp:action:wait');
@@ -56,6 +57,10 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
   let checkCount = 0;
   let modelRetryCount = 0;
 
+  // 加载持久化的信号状态
+  let signalState = loadSignalState();
+  debug('Loaded signal state: %o', signalState);
+
   // 心跳循环
   while (Date.now() - startTime < timeoutMs) {
     checkCount++;
@@ -82,10 +87,20 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
 
     // ========== 优先级1: 检测阻塞性弹窗（最高优先级）==========
     const blocking = detectBlocking(snapshots);
+
+    // 更新信号状态（用于持久化）
+    if (blocking.type !== 'none') {
+      signalState = updateSignalState(signalState, blocking.type);
+      debug('Signal state updated: %s (consecutive=%d)', blocking.type, signalState.consecutiveSignals[blocking.type]);
+    }
+
     if (blocking.type === 'delete_modal') {
       debug('Delete modal detected, recovering...');
       opts?.logger?.warn('Delete modal detected, recovering...', { action: policy.deleteAction });
-      const result = await recoverDeleteModal(cdp, policy.deleteAction);
+      const result = await recoverDeleteModal(cdp, policy.deleteAction, {
+        taskId: taskName,
+        logger: opts?.logger,
+      });
       debug('Delete modal recovery: %o', result);
       opts?.logger?.info('Delete modal recovery result', { success: result.success, action: result.action });
       if (result.success) {
@@ -94,7 +109,10 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
     } else if (blocking.type === 'overwrite_modal') {
       debug('Overwrite modal detected, recovering...');
       opts?.logger?.warn('Overwrite modal detected, recovering...', { action: policy.overwriteAction });
-      const result = await recoverOverwriteModal(cdp, policy.overwriteAction);
+      const result = await recoverOverwriteModal(cdp, policy.overwriteAction, {
+        taskId: taskName,
+        logger: opts?.logger,
+      });
       debug('Overwrite modal recovery: %o', result);
       opts?.logger?.info('Overwrite modal recovery result', { success: result.success, action: result.action });
       if (result.success) {
@@ -106,7 +124,10 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
       if (terminalFirstSeen && Date.now() - terminalFirstSeen > 5000) {
         debug('Terminal hang detected (>5s), recovering...');
         opts?.logger?.warn('Terminal hang detected (>5s), recovering...', { action: policy.terminalAction });
-        const result = await recoverTerminalHang(cdp, policy.terminalAction);
+        const result = await recoverTerminalHang(cdp, policy.terminalAction, {
+          taskId: taskName,
+          logger: opts?.logger,
+        });
         debug('Terminal hang recovery: %o', result);
         opts?.logger?.info('Terminal hang recovery result', { success: result.success, action: result.action });
         if (result.success) {
@@ -133,7 +154,10 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
         modelRetryCount++;
         debug(`Model stalled detected, retry ${modelRetryCount}/${policy.maxModelRetries}...`);
         opts?.logger?.warn('Model stalled detected, retrying...', { retryCount: modelRetryCount, maxRetries: policy.maxModelRetries });
-        const result = await recoverModelStalled(cdp);
+        const result = await recoverModelStalled(cdp, {
+          taskId: taskName,
+          logger: opts?.logger,
+        });
         debug('Model stalled recovery: %o', result);
         opts?.logger?.info('Model stalled recovery result', { success: result.success, action: result.action });
         if (result.success) {
@@ -164,6 +188,10 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
     });
     throw new Error(`[任务超时] 任务 "${taskName}" 在 ${Math.round(elapsed / 1000)} 秒内未完成，已超时。请检查任务状态或稍后重试。`);
   }
+
+  // 任务正常完成，重置信号状态
+  resetSignalState();
+  debug('Task completed normally, signal state reset');
 
   // 任务完成后，解析最终结果
   debug('Task completed, parsing result...');

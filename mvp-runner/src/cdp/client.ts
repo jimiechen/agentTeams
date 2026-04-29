@@ -72,7 +72,8 @@ export class CDPClient {
 
       debug('CDP connected, domains enabled');
 
-      // 心跳保活（30s）
+      // 心跳保活（默认10s，可通过环境变量 HEARTBEAT_INTERVAL_MS 调整）
+      const heartbeatInterval = Number(process.env.HEARTBEAT_INTERVAL_MS) || 10000;
       this.heartbeatTimer = setInterval(async () => {
         try {
           await this.Runtime.evaluate({ expression: '1' });
@@ -81,7 +82,7 @@ export class CDPClient {
           debug('Heartbeat failed');
           this.handleDisconnect();
         }
-      }, 30000);
+      }, heartbeatInterval);
 
       // 断连监听
       this.client.on('disconnect', () => {

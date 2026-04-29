@@ -178,6 +178,34 @@ export class WorkspaceLogger {
       ...meta,
     });
   }
+
+  /**
+   * 记录恢复操作审计日志
+   */
+  logRecoveryAudit(entry: {
+    taskId: string;
+    action: 'click-stop' | 'send-esc' | 'dismiss-modal' | 'click-retain' | 'click-delete';
+    targetSelector?: string;
+    result: 'success' | 'failed' | 'skipped';
+    reason: string;
+    durationMs: number;
+  }) {
+    const auditEntry = {
+      timestamp: new Date().toISOString(),
+      ...entry,
+    };
+
+    // 写入独立的审计日志文件
+    const auditLogPath = join(this.workspacePath, 'logs', this.dateStr, 'recovery-audit.jsonl');
+    try {
+      appendFileSync(auditLogPath, JSON.stringify(auditEntry) + '\n');
+    } catch (err) {
+      console.error(`Failed to write recovery audit log: ${err}`);
+    }
+
+    // 同时记录到主日志
+    this.info('Recovery audit', entry);
+  }
 }
 
 /**
