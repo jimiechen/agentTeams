@@ -5,6 +5,9 @@
 
 import type { CDPClient } from '../cdp/client.js';
 import type { HeartbeatMode, DetectionResult, Signal } from './types.js';
+import createDebug from 'debug';
+
+const debug = createDebug('mvp:heartbeat:layer1');
 
 export interface Layer1Payload {
   timestamp: number;
@@ -76,6 +79,12 @@ export class Layer1Collector {
         layer: 1,
         cost,
       };
+
+      // 打印详细的 Layer 1 检查结果
+      debug('Layer 1 check: cost=%dms, mode=%s, confidence=%d%%', cost, mode, Math.round(result.confidence * 100));
+      debug('  taskStatus=%s, activeTaskId=%s', taskStatus || 'null', activeTaskId || 'null');
+      debug('  buttons: background=%s, cancel=%s, retain/delete=%s', hasBackgroundBtn, hasCancelBtn, hasRetainDeleteBtns);
+      debug('  DOM: changed=%s, hash=%s', domChanged, domHash);
 
       return { payload, result };
     } catch (error) {
