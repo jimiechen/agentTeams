@@ -160,15 +160,28 @@ export class LarkBot {
 
   /** 往目标群发纯文本消息。 */
   async sendText(text: string): Promise<void> {
-    this.logger?.logLarkEvent('send_text', { textPreview: text.slice(0, 50) });
-    await this.client.im.message.create({
-      params: { receive_id_type: 'chat_id' },
-      data: {
-        receive_id: this.chatId,
-        msg_type: 'text',
-        content: JSON.stringify({ text }),
-      },
-    });
+    try {
+      this.logger?.logLarkEvent('send_text', { textPreview: text.slice(0, 50) });
+      await this.client.im.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: this.chatId,
+          msg_type: 'text',
+          content: JSON.stringify({ text }),
+        },
+      });
+      log('Message sent to chat %s', this.chatId);
+    } catch (err: any) {
+      // 静默处理发送失败（如机器人不在群聊中）
+      const errorMsg = err?.msg || err?.message || 'unknown error';
+      log('Failed to send message to chat %s: %s', this.chatId, errorMsg);
+      this.logger?.error('Failed to send message', {
+        error: errorMsg,
+        chatId: this.chatId,
+        textPreview: text.slice(0, 50),
+      });
+      // 不抛出异常，静默失败
+    }
   }
 
   /** 回复某条消息（引用回复，带上下文）。失败降级为 sendText。 */
