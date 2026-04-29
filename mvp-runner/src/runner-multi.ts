@@ -88,7 +88,7 @@ export class MultiTaskRunner {
   }
 
   /** 心跳状态变化回调 */
-  private onHeartbeatModeChange(from: HeartbeatMode, to: HeartbeatMode): void {
+  private onHeartbeatModeChange(from: HeartbeatMode, to: HeartbeatMode, context?: { interruptedTasks?: string[] }): void {
     log('Heartbeat mode changed: %s -> %s', from, to);
 
     // 向所有群聊报告状态变化
@@ -111,10 +111,18 @@ export class MultiTaskRunner {
     const emoji = statusEmoji[to] || '⚠️';
     const text = statusText[to] || `未知状态: ${to}`;
 
+    // 构建通知消息
+    let message = `${emoji} [心跳检测] ${text} (从 ${from} 切换到 ${to})`;
+    
+    // 如果有中断的任务，添加到消息中
+    if (context?.interruptedTasks && context.interruptedTasks.length > 0) {
+      message += `\n⚠️ 检测到中断任务: ${context.interruptedTasks.join(', ')}`;
+    }
+
     // 仅异常状态才通知群聊
     if (to === 'frozen' || to === 'crashed') {
       for (const bot of this.bots) {
-        bot.sendText(`${emoji} [心跳检测] ${text} (从 ${from} 切换到 ${to})`).catch((err) => {
+        bot.sendText(message).catch((err) => {
           log('Failed to send heartbeat alert: %s', (err as Error).message);
         });
       }

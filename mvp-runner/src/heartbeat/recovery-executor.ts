@@ -337,6 +337,24 @@ export class RecoveryExecutor {
     return results;
   }
 
+  /**
+   * 中断任务恢复策略
+   * 用于恢复被手动中断的任务
+   */
+  async executeInterruptedRecovery(taskName: string): Promise<RecoveryResult[]> {
+    debug('Executing interrupted recovery strategy for task: %s', taskName);
+    const results: RecoveryResult[] = [];
+
+    // 步骤1: 点击对应任务槽位重新激活
+    debug('Attempting to reactivate interrupted task: %s', taskName);
+    // 这里可以添加切换到对应任务的逻辑
+
+    // 步骤2: 尝试重新开始任务或报告状态
+    results.push(await this.executeAction(RECOVERY_ACTIONS.reportToGroup));
+
+    return results;
+  }
+
   // ============ 动作执行 ============
 
   /**

@@ -12,7 +12,7 @@ import type {
 } from './types.js';
 import { DEFAULT_HEARTBEAT_CONFIG } from './types.js';
 import { HealthStateMachine } from './state-machine.js';
-import { Layer1Collector } from './layer1.js';
+import { Layer1Collector, type Layer1Payload } from './layer1.js';
 import { RecoveryExecutor } from './recovery-executor.js';
 import createDebug from 'debug';
 
@@ -29,7 +29,8 @@ export class HeartbeatDetector {
   private layer2Timer: NodeJS.Timeout | null = null;
   private layer3Timer: NodeJS.Timeout | null = null;
   private isRunning = false;
-  private onModeChange?: (from: HeartbeatMode, to: HeartbeatMode) => void;
+  private onModeChange?: (from: HeartbeatMode, to: HeartbeatMode, context?: { interruptedTasks?: string[] }) => void;
+  private lastLayer1Payload?: Layer1Payload;
 
   constructor(
     cdp: CDPClient,
@@ -113,8 +114,8 @@ export class HeartbeatDetector {
     if (!this.isRunning) return;
 
     try {
-      const { result } = await this.layer1Collector.collect(this.cdp);
-      await this.processResult(result);
+      const { result, payload } = await this.layer1Collector.collect(this.cdp);
+      await this.processResult(result, payload);
 
       if (result.cost > 5) {
         debug('Layer 1 cost warning: %dms', result.cost);
@@ -160,7 +161,12 @@ export class HeartbeatDetector {
   /**
    * 处理检测结果
    */
-  private async processResult(result: DetectionResult): Promise<void> {
+  private async processResult(result: DetectionResult, payload?: Layer1Payload): Promise<void> {
+    // 保存最后一次 Layer 1 payload
+    if (payload) {
+      this.lastLayer1Payload = payload;
+    }
+
     // 添加到信号缓冲区
     this.signalBuffer.push(...result.signals);
 
@@ -184,7 +190,19 @@ export class HeartbeatDetector {
             result.confidence,
             result.layer
           );
-          this.onModeChange?.(previousState, transition.to);
+
+          // 构建上下文信息
+          const context: { interruptedTasks?: string[] } = {};
+          if (payload?.tasks) {
+            const interruptedTasks = payload.tasks
+              .filter(t => t.status === 'interrupted')
+              .map(t => t.name);
+            if (interruptedTasks.length > 0) {
+              context.interruptedTasks = interruptedTasks;
+            }
+          }
+
+          this.onModeChange?.(previousState, transition.to, context);
 
           // 如果进入异常状态，触发自动恢复
           if (transition.to === 'frozen' || transition.to === 'crashed') {

@@ -211,6 +211,13 @@ export class Layer1Collector {
     const hasActive = payload.tasks.some(t => t.isActive);
     if (hasActive) return 'normal';
 
+    // 检查是否有中断的任务 - 需要恢复
+    const hasInterrupted = payload.tasks.some(t => t.status === 'interrupted');
+    if (hasInterrupted) {
+      debug('⚠️ Detected interrupted task, marking as frozen for recovery');
+      return 'frozen';
+    }
+
     // 如果没有任何任务活动，可能是空闲状态
     if (payload.tasks.length === 0 || payload.tasks.every(t => t.status === 'idle' || t.status === 'completed')) {
       return 'idle';
