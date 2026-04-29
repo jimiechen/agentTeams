@@ -165,6 +165,8 @@ export class RecoveryExecutor {
   private lastRecoveryTime = 0;
   private sessionId: string;
   private isRecovering = false;
+  private consecutiveFailures = 0;
+  private maxConsecutiveFailures = 3;
 
   constructor(
     cdp: CDPClient,
@@ -221,18 +223,26 @@ export class RecoveryExecutor {
       const anySuccess = results.some((r) => r.success);
 
       if (allFailed) {
-        debug('❌ Recovery failed: all %d actions failed', results.length);
+        this.consecutiveFailures++;
+        debug('❌ Recovery failed: all %d actions failed (failure #%d/%d)', 
+          results.length, this.consecutiveFailures, this.maxConsecutiveFailures);
         this.auditLog.push({
           timestamp: Date.now(),
           action: 'recovery-failed',
           result: 'failure',
-          reason: 'All recovery actions failed',
+          reason: `All recovery actions failed (failure #${this.consecutiveFailures}/${this.maxConsecutiveFailures})`,
           riskLevel: 'critical',
           operator: 'auto',
           sessionId: this.sessionId,
         });
-        this.stateMachine.transition('recovery-failed');
+        
+        // 如果连续失败超过限制，转为 crashed 状态
+        if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
+          debug('🚨 Max consecutive failures reached, transitioning to crashed');
+          this.stateMachine.transition('recovery-failed');
+        }
       } else if (anySuccess) {
+        this.consecutiveFailures = 0; // 重置失败计数
         const successCount = results.filter((r) => r.success).length;
         debug('✅ Recovery succeeded: %d/%d actions succeeded', successCount, results.length);
         this.stateMachine.transition('recovery-success');
@@ -253,25 +263,44 @@ export class RecoveryExecutor {
 
   /**
    * 冻结恢复策略
-   * 1. 先尝试点击停止按钮
-   * 2. 再尝试点击取消/后台运行
-   * 3. 最后尝试刷新页面
+   * 1. 先检查是否有中断的任务，尝试重新激活
+   * 2. 尝试点击停止按钮
+   * 3. 再尝试点击取消/后台运行
+   * 4. 最后尝试刷新页面
    */
   private async executeFrozenRecovery(): Promise<RecoveryResult[]> {
     debug('Executing frozen recovery strategy');
     const results: RecoveryResult[] = [];
 
-    // 步骤1: 尝试停止当前输出
+    // 步骤1: 检查并尝试重新激活中断的任务
+    const interruptedTask = await this.findInterruptedTask();
+    if (interruptedTask) {
+      debug('Found interrupted task: %s, attempting to reactivate', interruptedTask);
+      const reactivated = await this.reactivateTask(interruptedTask);
+      if (reactivated) {
+        debug('✅ Task %s reactivated successfully', interruptedTask);
+        results.push({
+          success: true,
+          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'reactivate-task', description: `重新激活任务 ${interruptedTask}` },
+          attempts: 1,
+          timestamp: Date.now(),
+          duration: 0,
+        });
+        return results;
+      }
+    }
+
+    // 步骤2: 尝试停止当前输出
     results.push(await this.executeAction(RECOVERY_ACTIONS.clickStop));
     await this.delay(1000);
 
-    // 步骤2: 尝试取消任务
+    // 步骤3: 尝试取消任务
     if (!results[0]?.success) {
       results.push(await this.executeAction(RECOVERY_ACTIONS.clickCancel));
       await this.delay(1000);
     }
 
-    // 步骤3: 尝试后台运行
+    // 步骤4: 尝试后台运行
     const hasBackgroundBtn = await this.checkElementExists(
       RECOVERY_ACTIONS.clickBackground.target!
     );
@@ -280,16 +309,68 @@ export class RecoveryExecutor {
       await this.delay(1000);
     }
 
-    // 步骤4: 如果都失败，刷新页面
+    // 步骤5: 如果都失败，刷新页面
     const allFailed = results.every((r) => !r.success);
     if (allFailed) {
       results.push(await this.executeAction(RECOVERY_ACTIONS.refreshPage));
     }
 
-    // 步骤5: 报告状态
+    // 步骤6: 报告状态
     results.push(await this.executeAction(RECOVERY_ACTIONS.reportToGroup));
 
     return results;
+  }
+
+  /**
+   * 查找中断的任务
+   */
+  private async findInterruptedTask(): Promise<string | null> {
+    try {
+      const taskName = await this.cdp.evaluate<string | null>(`
+        (() => {
+          const items = document.querySelectorAll('.index-module__task-item___zOpfg');
+          for (const item of items) {
+            const text = item.textContent || '';
+            if (text.includes('中断')) {
+              if (text.includes('PMCLI')) return 'PMCLI';
+              if (text.includes('DEVCLI')) return 'DEVCLI';
+              if (text.includes('WikiBot')) return 'WikiBot';
+            }
+          }
+          return null;
+        })()
+      `);
+      return taskName;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 重新激活任务（点击任务项）
+   */
+  private async reactivateTask(taskName: string): Promise<boolean> {
+    try {
+      debug('Clicking on task %s to reactivate', taskName);
+      await this.cdp.evaluate<boolean>(`
+        (() => {
+          const items = document.querySelectorAll('.index-module__task-item___zOpfg');
+          for (const item of items) {
+            const text = item.textContent || '';
+            if (text.includes('${taskName}')) {
+              item.click();
+              return true;
+            }
+          }
+          return false;
+        })()
+      `);
+      await this.delay(500);
+      return true;
+    } catch (err) {
+      debug('Failed to reactivate task %s: %s', taskName, err instanceof Error ? err.message : 'unknown');
+      return false;
+    }
   }
 
   /**
