@@ -16,12 +16,15 @@ import type { WorkspaceConfig } from './workspace/loader.js';
 import { findWorkspaceByMention } from './workspace/loader.js';
 import { WorkspaceLogger, loggerManager } from './utils/workspace-logger.js';
 import { injectWikiContext } from './skills/wiki-inject.js';
+import { HeartbeatDetector } from './heartbeat/index.js';
+import type { HeartbeatMode } from './heartbeat/index.js';
 
 const log = debug('mvp:runner-multi');
 
 export class MultiTaskRunner {
   private runsDir: string;
   private loggers = new Map<string, WorkspaceLogger>();
+  private heartbeatDetector?: HeartbeatDetector;
 
   constructor(
     private cfg: AppConfig,
@@ -34,6 +37,9 @@ export class MultiTaskRunner {
 
     // 为每个工作空间初始化logger
     this.initWorkspaceLoggers();
+
+    // 初始化心跳检测器
+    this.initHeartbeatDetector();
   }
 
   /** 初始化所有工作空间的logger */
@@ -53,6 +59,71 @@ export class MultiTaskRunner {
   /** 获取工作空间的logger */
   private getLogger(workspaceName: string): WorkspaceLogger | undefined {
     return this.loggers.get(workspaceName);
+  }
+
+  /** 初始化心跳检测器 */
+  private initHeartbeatDetector(): void {
+    try {
+      this.heartbeatDetector = new HeartbeatDetector(
+        this.cdp,
+        {
+          layer1Interval: 5000,
+          layer2Interval: 15000,
+          layer3Interval: 30000,
+        },
+        (from: HeartbeatMode, to: HeartbeatMode) => {
+          this.onHeartbeatModeChange(from, to);
+        }
+      );
+
+      // 启动心跳检测
+      this.heartbeatDetector.start().catch((err) => {
+        log('Failed to start heartbeat detector: %s', (err as Error).message);
+      });
+
+      log('Heartbeat detector initialized');
+    } catch (err) {
+      log('Failed to initialize heartbeat detector: %s', (err as Error).message);
+    }
+  }
+
+  /** 心跳状态变化回调 */
+  private onHeartbeatModeChange(from: HeartbeatMode, to: HeartbeatMode): void {
+    log('Heartbeat mode changed: %s -> %s', from, to);
+
+    // 向所有群聊报告状态变化
+    const statusEmoji: Record<HeartbeatMode, string> = {
+      normal: '✅',
+      idle: '💤',
+      background: '⏳',
+      frozen: '❄️',
+      crashed: '💥',
+    };
+
+    const statusText: Record<HeartbeatMode, string> = {
+      normal: '系统正常',
+      idle: '系统空闲',
+      background: '任务后台运行中',
+      frozen: '系统冻结，正在恢复...',
+      crashed: '系统崩溃，需要人工介入',
+    };
+
+    const emoji = statusEmoji[to] || '⚠️';
+    const text = statusText[to] || `未知状态: ${to}`;
+
+    // 仅异常状态才通知群聊
+    if (to === 'frozen' || to === 'crashed') {
+      for (const bot of this.bots) {
+        bot.sendText(`${emoji} [心跳检测] ${text} (从 ${from} 切换到 ${to})`).catch((err) => {
+          log('Failed to send heartbeat alert: %s', (err as Error).message);
+        });
+      }
+    }
+  }
+
+  /** 获取心跳检测器统计 */
+  getHeartbeatStats() {
+    return this.heartbeatDetector?.getStats();
   }
 
   /** 通用消息处理器 */
