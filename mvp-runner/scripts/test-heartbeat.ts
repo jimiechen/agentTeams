@@ -18,32 +18,25 @@ class MockCDPClient {
   }
 
   async send(method: string, params?: any): Promise<any> {
-    if (method === 'Runtime.evaluate') {
-      const expression = params?.expression || '';
-
-      // 检查元素是否存在
-      if (expression.includes('document.querySelector')) {
-        const match = expression.match(/querySelector\('([^']+)'\)/);
-        if (match) {
-          const selector = match[1];
-          const exists = this.elements.get(selector) || false;
-          return { result: { value: exists } };
-        }
-      }
-
-      // 简单的JS计算
-      if (expression === '1+1') {
-        return { result: { value: 2 } };
-      }
-
-      return { result: { value: true } };
-    }
-
-    if (method === 'Page.reload') {
-      return {};
-    }
-
     return {};
+  }
+
+  async evaluate<T>(expression: string): Promise<T> {
+    // 检查元素是否存在
+    if (expression.includes('document.querySelector')) {
+      const match = expression.match(/querySelector\('([^']+)'\)/);
+      if (match) {
+        const selector = match[1];
+        return (this.elements.get(selector) || false) as T;
+      }
+    }
+
+    // 简单的JS计算
+    if (expression === '1+1') {
+      return 2 as T;
+    }
+
+    return true as T;
   }
 }
 

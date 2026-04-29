@@ -264,16 +264,13 @@ export class HeartbeatDetector {
     try {
       // 通过CDP检查最近的网络请求
       // 简化实现：检查页面是否有加载状态
-      const result = await this.cdp.send('Runtime.evaluate', {
-        expression: `
-          (() => {
-            const loaders = document.querySelectorAll('.loading, .spinner, [class*="loading"]');
-            return loaders.length > 0;
-          })()
-        `,
-        returnByValue: true,
-      });
-      return result.result?.value || false;
+      const value = await this.cdp.evaluate<boolean>(`
+        (() => {
+          const loaders = document.querySelectorAll('.loading, .spinner, [class*="loading"]');
+          return loaders.length > 0;
+        })()
+      `);
+      return value || false;
     } catch {
       return false;
     }
@@ -285,16 +282,13 @@ export class HeartbeatDetector {
   private async checkUserInteraction(): Promise<boolean> {
     try {
       // 检查是否有最近的输入焦点
-      const result = await this.cdp.send('Runtime.evaluate', {
-        expression: `
-          (() => {
-            const activeElement = document.activeElement;
-            return activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA');
-          })()
-        `,
-        returnByValue: true,
-      });
-      return result.result?.value || false;
+      const value = await this.cdp.evaluate<boolean>(`
+        (() => {
+          const activeElement = document.activeElement;
+          return activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA');
+        })()
+      `);
+      return value || false;
     } catch {
       return false;
     }
@@ -307,11 +301,7 @@ export class HeartbeatDetector {
     try {
       // 执行一个简单的JS表达式测试响应性
       const startTime = Date.now();
-      await this.cdp.send('Runtime.evaluate', {
-        expression: '1+1',
-        returnByValue: true,
-        timeout: 5000,
-      });
+      await this.cdp.evaluate<number>('1+1');
       return Date.now() - startTime < 3000; // 3秒内响应视为frozen，否则crashed
     } catch {
       return false;

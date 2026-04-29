@@ -282,8 +282,10 @@ export function checkPromotions(workspaces: string[]): Array<{
 
   // 简单匹配: 查找在所有工作区中都出现的行
   if (layer2Contents.size >= 2) {
-    const [firstWs, firstContent] = layer2Contents.entries().next().value;
-    const lines = firstContent.split('\n').filter(l => l.trim().startsWith('-'));
+    const firstEntry = layer2Contents.entries().next().value;
+    if (!firstEntry) return candidates;
+    const [firstWs, firstContent] = firstEntry as [string, string];
+    const lines = firstContent.split('\n').filter((l: string) => l.trim().startsWith('-'));
 
     for (const line of lines) {
       const pattern = line.trim();

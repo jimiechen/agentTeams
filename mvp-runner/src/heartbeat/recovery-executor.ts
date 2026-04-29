@@ -3,8 +3,8 @@
  * 完整的权限边界控制 + 审计日志 + 分级恢复策略
  */
 
-import { CDPClient } from '../cdp-client.js';
-import debug from 'debug';
+import type { CDPClient } from '../cdp/client.js';
+import createDebug from 'debug';
 import {
   isButtonAllowed,
   requiresConfirmation,
@@ -15,6 +15,8 @@ import type { HeartbeatMode } from './types.js';
 import { HealthStateMachine } from './state-machine.js';
 import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'fs';
 import path from 'path';
+
+const debug = createDebug('mvp:heartbeat:recovery');
 
 // ============ 类型定义 ============
 
@@ -437,16 +439,14 @@ export class RecoveryExecutor {
       }
 
       // 使用CDP点击元素
-      await this.cdp.send('Runtime.evaluate', {
-        expression: `
-          (function() {
-            const el = document.querySelector('${selector}');
-            if (!el) return false;
-            el.click();
-            return true;
-          })()
-        `,
-      });
+      await this.cdp.evaluate<boolean>(`
+        (function() {
+          const el = document.querySelector('${selector}');
+          if (!el) return false;
+          el.click();
+          return true;
+        })()
+      `);
 
       debug('Clicked element: %s', selector);
       return true;
@@ -461,7 +461,8 @@ export class RecoveryExecutor {
    */
   private async performRefresh(): Promise<boolean> {
     try {
-      await this.cdp.send('Page.reload', { ignoreCache: true });
+      // CDPClient 没有直接的 Page.reload 方法，使用 evaluate 执行 location.reload()
+      await this.cdp.evaluate<void>('location.reload()');
       debug('Page refreshed');
       return true;
     } catch (error) {
@@ -562,10 +563,8 @@ export class RecoveryExecutor {
    */
   private async checkElementExists(selector: string): Promise<boolean> {
     try {
-      const result = await this.cdp.send('Runtime.evaluate', {
-        expression: `!!document.querySelector('${selector}')`,
-      });
-      return result?.result?.value === true;
+      const value = await this.cdp.evaluate<boolean>(`!!document.querySelector('${selector}')`);
+      return value === true;
     } catch {
       return false;
     }

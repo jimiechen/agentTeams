@@ -364,7 +364,7 @@ export async function recoverModelStalled(
  */
 export async function emergencyReload(cdp: CDPClient): Promise<void> {
   debug('EMERGENCY: Reloading page');
-  await cdp.send('Page.reload');
+  await cdp.evaluate<void>('location.reload()');
 }
 
 /**
@@ -373,24 +373,24 @@ export async function emergencyReload(cdp: CDPClient): Promise<void> {
  */
 export async function sendCtrlC(cdp: CDPClient): Promise<void> {
   debug('Sending Ctrl+C to terminal');
-  
+
   // 先找到终端textarea并focus
-  await cdp.evaluate(`
+  await cdp.evaluate<void>(`
     (() => {
       const textarea = document.querySelector('.terminal textarea, [class*="terminal"] textarea');
       if (textarea) textarea.focus();
     })()
   `);
-  
+
   // 发送 Ctrl+C
-  await cdp.send('Input.dispatchKeyEvent', {
+  await cdp.Input.dispatchKeyEvent({
     type: 'keyDown',
     modifiers: 2, // Ctrl
     key: 'c',
     code: 'KeyC',
   });
-  
-  await cdp.send('Input.dispatchKeyEvent', {
+
+  await cdp.Input.dispatchKeyEvent({
     type: 'keyUp',
     modifiers: 2,
     key: 'c',
