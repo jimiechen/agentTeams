@@ -121,7 +121,28 @@ export class MultiTaskRunner {
 
     // 仅异常状态才通知群聊
     if (to === 'frozen' || to === 'crashed') {
-      for (const bot of this.bots) {
+      // 如果有特定任务中断，只通知对应的 bot；否则通知第一个 bot
+      const targetBots = new Set<LarkBot>();
+      
+      if (context?.interruptedTasks && context.interruptedTasks.length > 0) {
+        // 为每个中断的任务找到对应的 bot
+        for (const taskName of context.interruptedTasks) {
+          const matchedBot = this.bots.find(b => 
+            b.keyword.toUpperCase() === taskName.toUpperCase()
+          );
+          if (matchedBot) {
+            targetBots.add(matchedBot);
+          }
+        }
+      }
+      
+      // 如果没有匹配到特定 bot，使用第一个 bot 作为默认通知
+      if (targetBots.size === 0 && this.bots.length > 0) {
+        targetBots.add(this.bots[0]);
+      }
+      
+      // 发送通知（避免重复）
+      for (const bot of targetBots) {
         bot.sendText(message).catch((err) => {
           log('Failed to send heartbeat alert: %s', (err as Error).message);
         });
