@@ -8,10 +8,14 @@ import { MultiTaskRunner } from './runner-multi.js';
 import { loadWorkspaces, loadWikiBotConfig } from './workspace/loader.js';
 import { WikiBotHandler } from './wikibot/index.js';
 import { bootInfo, bootError, bootWarn } from './utils/boot-logger.js';
+import { startTerminalLogging, stopTerminalLogging } from './utils/terminal-logger.js';
 
 const log = debug('mvp:boot');
 
 async function main() {
+  // 开启终端日志捕获（必须在最开始）
+  startTerminalLogging();
+
   try {
     bootInfo('=== Multi-Task Runner 启动 ===');
 
@@ -131,19 +135,23 @@ async function main() {
     }
     await cdp.disconnect();
     bootInfo('CDP disconnected, exit');
+    stopTerminalLogging();
     process.exit(0);
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('exit', () => stopTerminalLogging());
 
   bootInfo(`🚀 Multi-Task Runner is up with ${allBots.length} bots`);
   } catch (err) {
     bootError('[FATAL] Failed to boot', { error: (err as Error).message, stack: (err as Error).stack });
+    stopTerminalLogging();
     process.exit(1);
   }
 }
 
 main().catch((err) => {
   bootError('[FATAL] Unhandled error in main()', { error: (err as Error).message, stack: (err as Error).stack });
+  stopTerminalLogging();
   process.exit(1);
 });
