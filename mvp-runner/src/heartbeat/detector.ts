@@ -1,0 +1,385 @@
+/**
+ * HeartbeatDetector - 心跳检测器核心类
+ * 协调三层检测（Layer 1/2/3），管理信号缓冲区，决策健康状态
+ */
+
+import type { CDPClient } from '../cdp/client.js';
+import type {
+  HeartbeatConfig,
+  DetectionResult,
+  HeartbeatMode,
+  Signal,
+} from './types.js';
+import { DEFAULT_HEARTBEAT_CONFIG } from './types.js';
+import { HealthStateMachine } from './state-machine.js';
+import { Layer1Collector } from './layer1.js';
+import { RecoveryExecutor } from './recovery-executor.js';
+import createDebug from 'debug';
+
+const debug = createDebug('mvp:heartbeat:detector');
+
+export class HeartbeatDetector {
+  private config: HeartbeatConfig;
+  private cdp: CDPClient;
+  private stateMachine: HealthStateMachine;
+  private layer1Collector: Layer1Collector;
+  private recoveryExecutor: RecoveryExecutor;
+  private signalBuffer: Signal[] = [];
+  private layer1Timer: NodeJS.Timeout | null = null;
+  private layer2Timer: NodeJS.Timeout | null = null;
+  private layer3Timer: NodeJS.Timeout | null = null;
+  private isRunning = false;
+  private onModeChange?: (from: HeartbeatMode, to: HeartbeatMode) => void;
+
+  constructor(
+    cdp: CDPClient,
+    config?: Partial<HeartbeatConfig>,
+    onModeChange?: (from: HeartbeatMode, to: HeartbeatMode) => void
+  ) {
+    this.cdp = cdp;
+    this.config = { ...DEFAULT_HEARTBEAT_CONFIG, ...config };
+    this.stateMachine = new HealthStateMachine();
+    this.layer1Collector = new Layer1Collector();
+    this.recoveryExecutor = new RecoveryExecutor(cdp, this.stateMachine);
+    this.onModeChange = onModeChange;
+  }
+
+  /**
+   * 启动三层检测定时器
+   */
+  async start(): Promise<void> {
+    if (this.isRunning) {
+      debug('HeartbeatDetector already running');
+      return;
+    }
+
+    this.isRunning = true;
+    debug(
+      'Starting HeartbeatDetector: L1=%dms, L2=%dms, L3=%dms',
+      this.config.layer1Interval,
+      this.config.layer2Interval,
+      this.config.layer3Interval
+    );
+
+    // Layer 1: 快速检测（5秒）
+    this.layer1Timer = setInterval(
+      () => this.runLayer1(),
+      this.config.layer1Interval
+    );
+
+    // Layer 2: 内容检测（15秒）
+    this.layer2Timer = setInterval(
+      () => this.runLayer2(),
+      this.config.layer2Interval
+    );
+
+    // Layer 3: 深度检测（30秒）
+    this.layer3Timer = setInterval(
+      () => this.runLayer3(),
+      this.config.layer3Interval
+    );
+
+    // 立即执行一次Layer 1检测
+    await this.runLayer1();
+  }
+
+  /**
+   * 停止所有检测定时器
+   */
+  async stop(): Promise<void> {
+    if (!this.isRunning) return;
+
+    this.isRunning = false;
+    debug('Stopping HeartbeatDetector');
+
+    if (this.layer1Timer) {
+      clearInterval(this.layer1Timer);
+      this.layer1Timer = null;
+    }
+    if (this.layer2Timer) {
+      clearInterval(this.layer2Timer);
+      this.layer2Timer = null;
+    }
+    if (this.layer3Timer) {
+      clearInterval(this.layer3Timer);
+      this.layer3Timer = null;
+    }
+  }
+
+  /**
+   * Layer 1: 快速检测
+   */
+  private async runLayer1(): Promise<void> {
+    if (!this.isRunning) return;
+
+    try {
+      const { result } = await this.layer1Collector.collect(this.cdp);
+      await this.processResult(result);
+
+      if (result.cost > 5) {
+        debug('Layer 1 cost warning: %dms', result.cost);
+      }
+    } catch (error) {
+      debug('Layer 1 error: %s', error instanceof Error ? error.message : 'unknown');
+    }
+  }
+
+  /**
+   * Layer 2: 内容检测
+   * 仅在非normal状态时执行
+   */
+  private async runLayer2(): Promise<void> {
+    if (!this.isRunning) return;
+    if (this.stateMachine.getCurrentState() === 'normal') return;
+
+    try {
+      const result = await this.contentCheck();
+      await this.processResult(result);
+    } catch (error) {
+      debug('Layer 2 error: %s', error instanceof Error ? error.message : 'unknown');
+    }
+  }
+
+  /**
+   * Layer 3: 深度检测
+   * 仅在frozen或crashed状态时执行
+   */
+  private async runLayer3(): Promise<void> {
+    if (!this.isRunning) return;
+    const state = this.stateMachine.getCurrentState();
+    if (state !== 'frozen' && state !== 'crashed') return;
+
+    try {
+      const result = await this.deepCheck();
+      await this.processResult(result);
+    } catch (error) {
+      debug('Layer 3 error: %s', error instanceof Error ? error.message : 'unknown');
+    }
+  }
+
+  /**
+   * 处理检测结果
+   */
+  private async processResult(result: DetectionResult): Promise<void> {
+    // 添加到信号缓冲区
+    this.signalBuffer.push(...result.signals);
+
+    // 限制缓冲区大小
+    if (this.signalBuffer.length > this.config.signalBufferSize) {
+      this.signalBuffer = this.signalBuffer.slice(-this.config.signalBufferSize);
+    }
+
+    // 置信度足够高时更新状态
+    if (result.confidence >= this.config.confidenceThreshold) {
+      const previousState = this.stateMachine.getCurrentState();
+      const trigger = this.modeToTrigger(result.mode);
+
+      if (this.stateMachine.canTransition(trigger)) {
+        const transition = this.stateMachine.transition(trigger);
+        if (transition.success && transition.to !== previousState) {
+          debug(
+            'State changed: %s -> %s (confidence=%d, layer=%d)',
+            previousState,
+            transition.to,
+            result.confidence,
+            result.layer
+          );
+          this.onModeChange?.(previousState, transition.to);
+
+          // 如果进入异常状态，触发自动恢复
+          if (transition.to === 'frozen' || transition.to === 'crashed') {
+            debug('Abnormal state detected, triggering recovery');
+            await this.recoveryExecutor.executeRecovery(transition.to);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Layer 2: 内容检测
+   */
+  private async contentCheck(): Promise<DetectionResult> {
+    const startTime = Date.now();
+
+    // 检查网络活动
+    const networkActive = await this.checkNetworkActivity();
+
+    // 检查用户交互
+    const userInteraction = await this.checkUserInteraction();
+
+    const mode: HeartbeatMode = networkActive || userInteraction ? 'normal' : 'frozen';
+
+    return {
+      mode,
+      confidence: 0.6,
+      signals: [
+        {
+          type: networkActive ? 'network_active' : 'render_stopped',
+          source: 'layer2',
+          value: { networkActive, userInteraction },
+          timestamp: startTime,
+          weight: 0.6,
+        },
+      ],
+      timestamp: startTime,
+      layer: 2,
+      cost: Date.now() - startTime,
+    };
+  }
+
+  /**
+   * Layer 3: 深度检测
+   */
+  private async deepCheck(): Promise<DetectionResult> {
+    const startTime = Date.now();
+
+    // 检查页面响应性
+    const responsive = await this.checkPageResponsive();
+
+    const mode: HeartbeatMode = responsive ? 'frozen' : 'crashed';
+
+    return {
+      mode,
+      confidence: responsive ? 0.8 : 0.9,
+      signals: [
+        {
+          type: responsive ? 'process_frozen' : 'render_stopped',
+          source: 'layer3',
+          value: { responsive },
+          timestamp: startTime,
+          weight: 0.9,
+        },
+      ],
+      timestamp: startTime,
+      layer: 3,
+      cost: Date.now() - startTime,
+    };
+  }
+
+  /**
+   * 检查网络活动
+   */
+  private async checkNetworkActivity(): Promise<boolean> {
+    try {
+      // 通过CDP检查最近的网络请求
+      // 简化实现：检查页面是否有加载状态
+      const result = await this.cdp.send('Runtime.evaluate', {
+        expression: `
+          (() => {
+            const loaders = document.querySelectorAll('.loading, .spinner, [class*="loading"]');
+            return loaders.length > 0;
+          })()
+        `,
+        returnByValue: true,
+      });
+      return result.result?.value || false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 检查用户交互
+   */
+  private async checkUserInteraction(): Promise<boolean> {
+    try {
+      // 检查是否有最近的输入焦点
+      const result = await this.cdp.send('Runtime.evaluate', {
+        expression: `
+          (() => {
+            const activeElement = document.activeElement;
+            return activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA');
+          })()
+        `,
+        returnByValue: true,
+      });
+      return result.result?.value || false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 检查页面响应性
+   */
+  private async checkPageResponsive(): Promise<boolean> {
+    try {
+      // 执行一个简单的JS表达式测试响应性
+      const startTime = Date.now();
+      await this.cdp.send('Runtime.evaluate', {
+        expression: '1+1',
+        returnByValue: true,
+        timeout: 5000,
+      });
+      return Date.now() - startTime < 3000; // 3秒内响应视为frozen，否则crashed
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 将检测模式转换为状态机触发器
+   */
+  private modeToTrigger(mode: HeartbeatMode): string {
+    switch (mode) {
+      case 'normal':
+        return 'activity-resumed';
+      case 'idle':
+        return 'no-activity-5min';
+      case 'background':
+        return 'background-detected';
+      case 'frozen':
+        return 'frozen-signal';
+      case 'crashed':
+        return 'crash-signal';
+      default:
+        return 'frozen-signal';
+    }
+  }
+
+  /**
+   * 获取当前健康状态
+   */
+  getCurrentState(): HeartbeatMode {
+    return this.stateMachine.getCurrentState();
+  }
+
+  /**
+   * 获取信号缓冲区
+   */
+  getSignalBuffer(): Signal[] {
+    return [...this.signalBuffer];
+  }
+
+  /**
+   * 获取状态转换历史
+   */
+  getTransitionHistory() {
+    return this.stateMachine.getTransitionHistory();
+  }
+
+  /**
+   * 获取恢复执行器（用于外部访问审计日志等）
+   */
+  getRecoveryExecutor(): RecoveryExecutor {
+    return this.recoveryExecutor;
+  }
+
+  /**
+   * 获取统计信息
+   */
+  getStats(): {
+    currentState: HeartbeatMode;
+    signalCount: number;
+    transitionCount: number;
+    isRunning: boolean;
+  } {
+    return {
+      currentState: this.stateMachine.getCurrentState(),
+      signalCount: this.signalBuffer.length,
+      transitionCount: this.stateMachine.getTransitionHistory().length,
+      isRunning: this.isRunning,
+    };
+  }
+}
