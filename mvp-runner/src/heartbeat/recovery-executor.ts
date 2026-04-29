@@ -263,10 +263,12 @@ export class RecoveryExecutor {
 
   /**
    * 冻结恢复策略
-   * 1. 先检查是否有中断的任务，使用三路查找点击重试按钮
-   * 2. 等待3秒验证恢复结果
-   * 3. 如果失败，尝试重新激活任务
-   * 4. 最后尝试刷新页面
+   * 1. 先检查是否有中断的任务
+   * 2. 先切换到该任务（点击任务项）
+   * 3. 等待任务切换完成
+   * 4. 使用三路查找点击重试按钮
+   * 5. 等待3秒验证恢复结果
+   * 6. 最后尝试刷新页面兜底
    */
   private async executeFrozenRecovery(): Promise<RecoveryResult[]> {
     debug('Executing frozen recovery strategy');
@@ -277,8 +279,27 @@ export class RecoveryExecutor {
     if (interruptedTask) {
       debug('Found interrupted task: %s, attempting recovery', interruptedTask);
 
-      // 步骤1a: 使用三路查找点击重试按钮
-      debug('Attempting to click retry button (3-way lookup)...');
+      // 步骤2: 先切换到该任务（点击任务项）
+      debug('Step 1: Switching to interrupted task %s...', interruptedTask);
+      const switched = await this.switchToTask(interruptedTask);
+      if (!switched) {
+        debug('❌ Failed to switch to task %s', interruptedTask);
+      } else {
+        debug('✅ Switched to task %s, waiting for UI update...', interruptedTask);
+        results.push({
+          success: true,
+          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'switch-task', description: `切换到任务 ${interruptedTask}` },
+          attempts: 1,
+          timestamp: Date.now(),
+          duration: 0,
+        });
+      }
+
+      // 步骤3: 等待任务切换完成（UI渲染重试按钮）
+      await this.delay(2000);
+
+      // 步骤4: 使用三路查找点击重试按钮
+      debug('Step 2: Attempting to click retry button (3-way lookup)...');
       const retryResult = await this.clickRetryButton();
 
       if (retryResult.clicked) {
@@ -291,7 +312,7 @@ export class RecoveryExecutor {
           duration: 0,
         });
 
-        // 步骤2: 等待3秒验证恢复结果
+        // 步骤5: 等待3秒验证恢复结果
         debug('Waiting 3s to verify recovery...');
         await this.delay(3000);
 
@@ -301,40 +322,19 @@ export class RecoveryExecutor {
           debug('✅ Task %s recovered successfully', interruptedTask);
           return results;
         } else {
-          debug('⚠️ Task %s still interrupted after retry, will try reactivation', interruptedTask);
+          debug('⚠️ Task %s still interrupted after retry', interruptedTask);
         }
       } else {
         debug('❌ Retry button not found via any method: %s', retryResult.method);
       }
-
-      // 步骤3: 尝试重新激活任务（点击任务项）
-      debug('Attempting to reactivate task by clicking on it...');
-      const reactivated = await this.reactivateTask(interruptedTask);
-      if (reactivated) {
-        debug('✅ Task %s reactivated successfully', interruptedTask);
-        results.push({
-          success: true,
-          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'reactivate-task', description: `重新激活任务 ${interruptedTask}` },
-          attempts: 1,
-          timestamp: Date.now(),
-          duration: 0,
-        });
-
-        // 等待验证
-        await this.delay(2000);
-        const stillInterrupted2 = await this.findInterruptedTask();
-        if (!stillInterrupted2) {
-          return results;
-        }
-      }
     }
 
-    // 步骤4: 兜底策略 - 刷新页面
+    // 步骤6: 兜底策略 - 刷新页面
     debug('All recovery attempts failed, refreshing page as last resort');
     results.push(await this.executeAction(RECOVERY_ACTIONS.refreshPage));
     await this.delay(2000);
 
-    // 步骤5: 报告状态
+    // 步骤7: 报告状态
     results.push(await this.executeAction(RECOVERY_ACTIONS.reportToGroup));
 
     return results;
@@ -414,11 +414,11 @@ export class RecoveryExecutor {
   }
 
   /**
-   * 重新激活任务（点击任务项）
+   * 切换到指定任务（点击任务项）
    */
-  private async reactivateTask(taskName: string): Promise<boolean> {
+  private async switchToTask(taskName: string): Promise<boolean> {
     try {
-      debug('Clicking on task %s to reactivate', taskName);
+      debug('Switching to task %s', taskName);
       await this.cdp.evaluate<boolean>(`
         (() => {
           const items = document.querySelectorAll('.index-module__task-item___zOpfg');

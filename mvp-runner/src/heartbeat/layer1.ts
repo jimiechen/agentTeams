@@ -200,6 +200,13 @@ export class Layer1Collector {
     // 如果存在后台运行按钮，说明任务可能在后台
     if (payload.hasBackgroundBtn) return 'background';
 
+    // 检查是否有中断的任务 - 需要恢复（最高优先级）
+    const hasInterrupted = payload.tasks.some(t => t.status === 'interrupted');
+    if (hasInterrupted) {
+      debug('⚠️ Detected interrupted task, marking as frozen for recovery');
+      return 'frozen';
+    }
+
     // 如果存在取消按钮，说明有任务在进行中
     if (payload.hasCancelBtn) return 'normal';
 
@@ -210,13 +217,6 @@ export class Layer1Collector {
     // 检查是否有活动任务
     const hasActive = payload.tasks.some(t => t.isActive);
     if (hasActive) return 'normal';
-
-    // 检查是否有中断的任务 - 需要恢复
-    const hasInterrupted = payload.tasks.some(t => t.status === 'interrupted');
-    if (hasInterrupted) {
-      debug('⚠️ Detected interrupted task, marking as frozen for recovery');
-      return 'frozen';
-    }
 
     // 如果没有任何任务活动，可能是空闲状态
     if (payload.tasks.length === 0 || payload.tasks.every(t => t.status === 'idle' || t.status === 'completed')) {
