@@ -4,7 +4,7 @@
  */
 
 import { CDPClient } from '../cdp-client.js';
-import { debug } from '../utils/debug.js';
+import debug from 'debug';
 import {
   isButtonAllowed,
   requiresConfirmation,
@@ -13,8 +13,7 @@ import {
 import { recoveryRateLimiter, type RateLimitResult } from '../utils/rate-limiter.js';
 import type { HeartbeatMode } from './types.js';
 import { HealthStateMachine } from './state-machine.js';
-import { ensureDir } from '../utils/fs.js';
-import { writeFileSync, existsSync, readFileSync } from 'fs';
+import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'fs';
 import path from 'path';
 
 // ============ 类型定义 ============
@@ -534,7 +533,7 @@ export class RecoveryExecutor {
 
     // 写入文件
     try {
-      ensureDir(path.dirname(this.config.auditLogPath));
+      mkdirSync(path.dirname(this.config.auditLogPath), { recursive: true });
       const line = JSON.stringify(entry) + '\n';
       writeFileSync(this.config.auditLogPath, line, { flag: 'a' });
     } catch (error) {
