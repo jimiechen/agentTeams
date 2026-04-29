@@ -263,19 +263,52 @@ export class RecoveryExecutor {
 
   /**
    * 冻结恢复策略
-   * 1. 先检查是否有中断的任务，尝试重新激活
-   * 2. 尝试点击停止按钮
-   * 3. 再尝试点击取消/后台运行
+   * 1. 先检查是否有中断的任务，使用三路查找点击重试按钮
+   * 2. 等待3秒验证恢复结果
+   * 3. 如果失败，尝试重新激活任务
    * 4. 最后尝试刷新页面
    */
   private async executeFrozenRecovery(): Promise<RecoveryResult[]> {
     debug('Executing frozen recovery strategy');
     const results: RecoveryResult[] = [];
 
-    // 步骤1: 检查并尝试重新激活中断的任务
+    // 步骤1: 检查是否有中断的任务
     const interruptedTask = await this.findInterruptedTask();
     if (interruptedTask) {
-      debug('Found interrupted task: %s, attempting to reactivate', interruptedTask);
+      debug('Found interrupted task: %s, attempting recovery', interruptedTask);
+
+      // 步骤1a: 使用三路查找点击重试按钮
+      debug('Attempting to click retry button (3-way lookup)...');
+      const retryResult = await this.clickRetryButton();
+
+      if (retryResult.clicked) {
+        debug('✅ Retry button clicked successfully via method: %s', retryResult.method);
+        results.push({
+          success: true,
+          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'click-retry', description: `点击重试按钮 (${retryResult.method})` },
+          attempts: 1,
+          timestamp: Date.now(),
+          duration: 0,
+        });
+
+        // 步骤2: 等待3秒验证恢复结果
+        debug('Waiting 3s to verify recovery...');
+        await this.delay(3000);
+
+        // 验证：检查任务是否恢复
+        const stillInterrupted = await this.findInterruptedTask();
+        if (!stillInterrupted) {
+          debug('✅ Task %s recovered successfully', interruptedTask);
+          return results;
+        } else {
+          debug('⚠️ Task %s still interrupted after retry, will try reactivation', interruptedTask);
+        }
+      } else {
+        debug('❌ Retry button not found via any method: %s', retryResult.method);
+      }
+
+      // 步骤3: 尝试重新激活任务（点击任务项）
+      debug('Attempting to reactivate task by clicking on it...');
       const reactivated = await this.reactivateTask(interruptedTask);
       if (reactivated) {
         debug('✅ Task %s reactivated successfully', interruptedTask);
@@ -286,39 +319,73 @@ export class RecoveryExecutor {
           timestamp: Date.now(),
           duration: 0,
         });
-        return results;
+
+        // 等待验证
+        await this.delay(2000);
+        const stillInterrupted2 = await this.findInterruptedTask();
+        if (!stillInterrupted2) {
+          return results;
+        }
       }
     }
 
-    // 步骤2: 尝试停止当前输出
-    results.push(await this.executeAction(RECOVERY_ACTIONS.clickStop));
-    await this.delay(1000);
+    // 步骤4: 兜底策略 - 刷新页面
+    debug('All recovery attempts failed, refreshing page as last resort');
+    results.push(await this.executeAction(RECOVERY_ACTIONS.refreshPage));
+    await this.delay(2000);
 
-    // 步骤3: 尝试取消任务
-    if (!results[0]?.success) {
-      results.push(await this.executeAction(RECOVERY_ACTIONS.clickCancel));
-      await this.delay(1000);
-    }
-
-    // 步骤4: 尝试后台运行
-    const hasBackgroundBtn = await this.checkElementExists(
-      RECOVERY_ACTIONS.clickBackground.target!
-    );
-    if (hasBackgroundBtn) {
-      results.push(await this.executeAction(RECOVERY_ACTIONS.clickBackground));
-      await this.delay(1000);
-    }
-
-    // 步骤5: 如果都失败，刷新页面
-    const allFailed = results.every((r) => !r.success);
-    if (allFailed) {
-      results.push(await this.executeAction(RECOVERY_ACTIONS.refreshPage));
-    }
-
-    // 步骤6: 报告状态
+    // 步骤5: 报告状态
     results.push(await this.executeAction(RECOVERY_ACTIONS.reportToGroup));
 
     return results;
+  }
+
+  /**
+   * 三路查找重试按钮
+   * 路径1: aria-label 精确查找（最可靠，优先）
+   * 路径2: 文本内容全量扫描（兜底）
+   * 路径3: 在"手动终止输出"消息旁查找（DEVCLI 手动中断特有场景）
+   */
+  private async clickRetryButton(): Promise<{ clicked: boolean; method: string }> {
+    try {
+      const result = await this.cdp.evaluate<{ clicked: boolean; method: string }>(`
+        (() => {
+          // 路径 1: aria-label 精确查找（最可靠，优先）
+          let btn = document.querySelector('button[aria-label="重试"]');
+          if (btn) {
+            btn.click();
+            return { clicked: true, method: 'aria-label' };
+          }
+
+          // 路径 2: 文本内容全量扫描（兜底）
+          const allBtns = Array.from(document.querySelectorAll('button'));
+          const textBtn = allBtns.find(b => b.textContent?.trim() === '重试');
+          if (textBtn) {
+            textBtn.click();
+            return { clicked: true, method: 'text-content' };
+          }
+
+          // 路径 3: 在"手动终止输出"消息旁查找（DEVCLI 手动中断特有场景）
+          const turns = document.querySelectorAll('.chat-turn');
+          for (let i = turns.length - 1; i >= 0; i--) {
+            if (turns[i].textContent?.includes('手动终止输出')) {
+              const nearBtn = turns[i].querySelector('button[aria-label="重试"]');
+              if (nearBtn) {
+                nearBtn.click();
+                return { clicked: true, method: 'previous-message' };
+              }
+              break; // 只找最近一条，找不到就不继续
+            }
+          }
+
+          return { clicked: false, method: 'not-found' };
+        })()
+      `);
+      return result;
+    } catch (err) {
+      debug('clickRetryButton failed: %s', err instanceof Error ? err.message : 'unknown');
+      return { clicked: false, method: 'error' };
+    }
   }
 
   /**
