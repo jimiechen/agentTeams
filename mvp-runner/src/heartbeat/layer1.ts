@@ -17,10 +17,20 @@ export interface Layer1Payload {
   hasRetainDeleteBtns: boolean;
   activeTaskId: string | null;
   domHash: string;
+  tasks: TaskSnapshot[];
+}
+
+export interface TaskSnapshot {
+  index: number;
+  name: string;
+  status: string;
+  isSelected: boolean;
+  isActive: boolean;
 }
 
 export class Layer1Collector {
   private lastDomHash: string = '';
+  private lastTasksHash: string = '';
 
   async collect(cdp: CDPClient): Promise<{
     payload: Layer1Payload;
@@ -31,20 +41,23 @@ export class Layer1Collector {
     try {
       // 并行采集多个信号
       const [
-        taskStatus,
+        tasks,
         hasBackgroundBtn,
         hasCancelBtn,
         hasRetainDeleteBtns,
-        activeTaskId,
         domHash,
       ] = await Promise.all([
-        this.getTaskStatus(cdp),
+        this.scanAllTasks(cdp),
         this.hasElement(cdp, '.icd-btn.icd-btn-tertiary', '后台运行'),
         this.hasElement(cdp, '.icd-btn.icd-btn-tertiary', '取消'),
         this.hasRetainDeleteButtons(cdp),
-        this.getActiveTaskId(cdp),
         this.getDomHash(cdp),
       ]);
+
+      // 从任务列表中提取当前活动任务信息
+      const activeTask = tasks.find(t => t.isActive) || tasks.find(t => t.isSelected);
+      const taskStatus = activeTask?.status || null;
+      const activeTaskId = activeTask?.name || null;
 
       const payload: Layer1Payload = {
         timestamp: startTime,
@@ -54,6 +67,7 @@ export class Layer1Collector {
         hasRetainDeleteBtns,
         activeTaskId,
         domHash,
+        tasks,
       };
 
       const mode = this.determineMode(payload);
@@ -63,6 +77,11 @@ export class Layer1Collector {
       const domChanged = this.lastDomHash !== '' && this.lastDomHash !== domHash;
       this.lastDomHash = domHash;
 
+      // 检测任务列表变化
+      const tasksHash = this.getTasksHash(tasks);
+      const tasksChanged = this.lastTasksHash !== '' && this.lastTasksHash !== tasksHash;
+      this.lastTasksHash = tasksHash;
+
       const result: DetectionResult = {
         mode,
         confidence: this.calculateConfidence(payload, domChanged),
@@ -70,7 +89,7 @@ export class Layer1Collector {
           {
             type: domChanged ? 'dom_changed' : 'thread_responsive',
             source: 'layer1',
-            value: { taskStatus, hasBackgroundBtn, hasRetainDeleteBtns },
+            value: { taskStatus, hasBackgroundBtn, hasRetainDeleteBtns, tasksCount: tasks.length },
             timestamp: startTime,
             weight: mode === 'normal' ? 0.3 : 0.8,
           },
@@ -82,9 +101,15 @@ export class Layer1Collector {
 
       // 打印详细的 Layer 1 检查结果
       debug('Layer 1 check: cost=%dms, mode=%s, confidence=%d%%', cost, mode, Math.round(result.confidence * 100));
-      debug('  taskStatus=%s, activeTaskId=%s', taskStatus || 'null', activeTaskId || 'null');
-      debug('  buttons: background=%s, cancel=%s, retain/delete=%s', hasBackgroundBtn, hasCancelBtn, hasRetainDeleteBtns);
+      debug('  Tasks[%d]: %s', tasks.length, tasks.map(t => `${t.name}(${t.status}${t.isActive ? ',active' : ''})`).join(', ') || 'none');
+      debug('  Active: %s, Status: %s', activeTaskId || 'null', taskStatus || 'null');
+      debug('  Buttons: background=%s, cancel=%s, retain/delete=%s', hasBackgroundBtn, hasCancelBtn, hasRetainDeleteBtns);
       debug('  DOM: changed=%s, hash=%s', domChanged, domHash);
+
+      // 如果任务列表变化，额外打印一次
+      if (tasksChanged) {
+        debug('  ⚠️ Task list changed!');
+      }
 
       return { payload, result };
     } catch (error) {
@@ -97,6 +122,7 @@ export class Layer1Collector {
         hasRetainDeleteBtns: false,
         activeTaskId: null,
         domHash: '',
+        tasks: [],
       };
 
       const result: DetectionResult = {
@@ -116,8 +142,55 @@ export class Layer1Collector {
         cost: Date.now() - startTime,
       };
 
+      debug('Layer 1 check failed: %s', error instanceof Error ? error.message : 'unknown');
+
       return { payload, result };
     }
+  }
+
+  /**
+   * 扫描所有任务列表
+   */
+  private async scanAllTasks(cdp: CDPClient): Promise<TaskSnapshot[]> {
+    try {
+      const tasks = await cdp.evaluate<TaskSnapshot[]>(`
+        (() => {
+          const items = document.querySelectorAll('.index-module__task-item___zOpfg');
+          if (!items.length) return [];
+          
+          return Array.from(items).map((el, index) => {
+            const text = el.textContent?.trim() || '';
+            
+            // 识别任务名称
+            let name = 'unknown';
+            if (text.includes('PMCLI')) name = 'PMCLI';
+            else if (text.includes('DEVCLI')) name = 'DEVCLI';
+            else if (text.includes('WikiBot')) name = 'WikiBot';
+            
+            // 识别状态
+            let status = 'unknown';
+            if (text.includes('完成')) status = 'completed';
+            else if (text.includes('进行中')) status = 'in_progress';
+            else if (text.includes('中断')) status = 'interrupted';
+            else if (text.includes('空闲') || text.includes('idle')) status = 'idle';
+            
+            // 检查是否选中/活动
+            const isSelected = el.className.includes('selected') || el.className.includes('active');
+            const isActive = el.className.includes('active') || el.className.includes('running');
+            
+            return { index, name, status, isSelected, isActive };
+          }).filter(t => t.name !== 'unknown');
+        })()
+      `);
+      return tasks || [];
+    } catch (err) {
+      debug('Scan tasks failed: %s', err instanceof Error ? err.message : 'unknown');
+      return [];
+    }
+  }
+
+  private getTasksHash(tasks: TaskSnapshot[]): string {
+    return tasks.map(t => `${t.name}:${t.status}:${t.isActive ? '1' : '0'}`).join('|');
   }
 
   private determineMode(payload: Layer1Payload): HeartbeatMode {
@@ -130,8 +203,18 @@ export class Layer1Collector {
     // 如果存在取消按钮，说明有任务在进行中
     if (payload.hasCancelBtn) return 'normal';
 
-    // 如果没有任何按钮，可能是空闲状态
-    if (!payload.taskStatus) return 'idle';
+    // 检查是否有进行中的任务
+    const hasInProgress = payload.tasks.some(t => t.status === 'in_progress');
+    if (hasInProgress) return 'normal';
+
+    // 检查是否有活动任务
+    const hasActive = payload.tasks.some(t => t.isActive);
+    if (hasActive) return 'normal';
+
+    // 如果没有任何任务活动，可能是空闲状态
+    if (payload.tasks.length === 0 || payload.tasks.every(t => t.status === 'idle' || t.status === 'completed')) {
+      return 'idle';
+    }
 
     return 'normal';
   }
@@ -145,28 +228,9 @@ export class Layer1Collector {
     if (payload.taskStatus) confidence += 0.2;
     if (domChanged) confidence += 0.1;
     if (payload.activeTaskId) confidence += 0.1;
+    if (payload.tasks.length > 0) confidence += 0.1;
 
     return Math.min(confidence, 1.0);
-  }
-
-  private async getTaskStatus(cdp: CDPClient): Promise<string | null> {
-    try {
-      const value = await cdp.evaluate<string | null>(`
-        (() => {
-          const items = document.querySelectorAll('.index-module__task-item___zOpfg');
-          for (const item of items) {
-            if (item.classList.contains('index-module__task-item--active___xyz')) {
-              const statusEl = item.querySelector('.task-status-text');
-              return statusEl?.textContent?.trim() || null;
-            }
-          }
-          return null;
-        })()
-      `);
-      return value;
-    } catch {
-      return null;
-    }
   }
 
   private async hasElement(cdp: CDPClient, selector: string, text?: string): Promise<boolean> {
@@ -199,22 +263,6 @@ export class Layer1Collector {
       return value || false;
     } catch {
       return false;
-    }
-  }
-
-  private async getActiveTaskId(cdp: CDPClient): Promise<string | null> {
-    try {
-      const value = await cdp.evaluate<string | null>(`
-        (() => {
-          const activeItem = document.querySelector('.index-module__task-item--active___xyz');
-          if (!activeItem) return null;
-          return activeItem.getAttribute('data-task-id') || 
-                 activeItem.querySelector('[data-id]')?.getAttribute('data-id') || null;
-        })()
-      `);
-      return value;
-    } catch {
-      return null;
     }
   }
 
