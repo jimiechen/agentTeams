@@ -218,7 +218,10 @@ export class RecoveryExecutor {
 
       // 检查是否所有恢复都失败
       const allFailed = results.length > 0 && results.every((r) => !r.success);
+      const anySuccess = results.some((r) => r.success);
+
       if (allFailed) {
+        debug('❌ Recovery failed: all %d actions failed', results.length);
         this.auditLog.push({
           timestamp: Date.now(),
           action: 'recovery-failed',
@@ -229,8 +232,17 @@ export class RecoveryExecutor {
           sessionId: this.sessionId,
         });
         this.stateMachine.transition('recovery-failed');
-      } else if (results.some((r) => r.success)) {
+      } else if (anySuccess) {
+        const successCount = results.filter((r) => r.success).length;
+        debug('✅ Recovery succeeded: %d/%d actions succeeded', successCount, results.length);
         this.stateMachine.transition('recovery-success');
+      }
+
+      // 打印恢复结果摘要
+      debug('Recovery summary from state [%s]:', fromState);
+      for (const r of results) {
+        debug('  - %s: %s (%dms, %d attempts)', r.action.id, r.success ? '✅ success' : '❌ failed', r.duration, r.attempts);
+        if (r.error) debug('    error: %s', r.error);
       }
 
       return results;
@@ -344,6 +356,7 @@ export class RecoveryExecutor {
       // 1. 检查自动恢复是否启用
       if (!this.config.enableAutoRecovery && action.riskLevel !== 'low') {
         const reason = 'Auto recovery disabled for non-low risk actions';
+        debug('🚫 Action %s blocked: %s', action.id, reason);
         this.logAudit(action, 'blocked', reason);
         result.error = reason;
         return result;
@@ -353,29 +366,36 @@ export class RecoveryExecutor {
       if (action.type === 'click' && action.target) {
         const whitelistCheck = isButtonAllowed(action.target);
         if (!whitelistCheck.allowed) {
+          debug('🚫 Action %s blocked: not in whitelist', action.id);
           this.logAudit(action, 'blocked', whitelistCheck.reason);
           result.error = whitelistCheck.reason;
           return result;
         }
+        debug('✓ Action %s passed whitelist check (risk: %s)', action.id, whitelistCheck.entry?.riskLevel);
       }
 
       // 3. 速率限制检查
       const rateLimit = this.checkRateLimit(action);
       if (!rateLimit.allowed) {
+        debug('🚫 Action %s blocked: rate limited (retry in %ds)', action.id, Math.ceil((rateLimit.resetTime - Date.now()) / 1000));
         this.logAudit(action, 'blocked', rateLimit.reason);
         result.error = rateLimit.reason;
         return result;
       }
+      debug('✓ Action %s passed rate limit check', action.id);
 
       // 4. 高风险操作确认
       if (action.requiresConfirmation) {
+        debug('⚠️ Action %s requires confirmation (high risk)', action.id);
         const confirmed = await this.waitForConfirmation(action);
         if (!confirmed) {
           const reason = 'High-risk action not confirmed within timeout';
+          debug('🚫 Action %s blocked: no confirmation', action.id);
           this.logAudit(action, 'blocked', reason);
           result.error = reason;
           return result;
         }
+        debug('✓ Action %s confirmed', action.id);
       }
 
       // 5. 执行动作
@@ -434,9 +454,11 @@ export class RecoveryExecutor {
       // 先检查元素是否存在
       const exists = await this.checkElementExists(selector);
       if (!exists) {
-        debug('Element not found: %s', selector);
+        debug('❌ Click failed: element not found [%s]', selector);
         return false;
       }
+
+      debug('🖱️ Clicking element [%s]...', selector);
 
       // 使用CDP点击元素
       await this.cdp.evaluate<boolean>(`
@@ -448,10 +470,10 @@ export class RecoveryExecutor {
         })()
       `);
 
-      debug('Clicked element: %s', selector);
+      debug('✅ Clicked element [%s] successfully', selector);
       return true;
     } catch (error) {
-      debug('Click failed: %s', error instanceof Error ? error.message : String(error));
+      debug('❌ Click failed [%s]: %s', selector, error instanceof Error ? error.message : String(error));
       return false;
     }
   }
@@ -461,12 +483,13 @@ export class RecoveryExecutor {
    */
   private async performRefresh(): Promise<boolean> {
     try {
+      debug('🔄 Refreshing page...');
       // CDPClient 没有直接的 Page.reload 方法，使用 evaluate 执行 location.reload()
       await this.cdp.evaluate<void>('location.reload()');
-      debug('Page refreshed');
+      debug('✅ Page refreshed successfully');
       return true;
     } catch (error) {
-      debug('Refresh failed: %s', error instanceof Error ? error.message : String(error));
+      debug('❌ Page refresh failed: %s', error instanceof Error ? error.message : String(error));
       return false;
     }
   }

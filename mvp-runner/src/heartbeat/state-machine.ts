@@ -4,6 +4,9 @@
  */
 
 import type { HeartbeatMode } from './types.js';
+import createDebug from 'debug';
+
+const debug = createDebug('mvp:heartbeat:state');
 
 export interface StateTransition {
   from: HeartbeatMode;
@@ -55,6 +58,7 @@ export class HealthStateMachine {
     const to = transitions?.[trigger];
 
     if (!to) {
+      debug('❌ Invalid transition: [%s] cannot handle trigger "%s"', from, trigger);
       return { success: false, from, to: from };
     }
 
@@ -71,6 +75,7 @@ export class HealthStateMachine {
       this.transitionHistory = this.transitionHistory.slice(-this.MAX_HISTORY);
     }
 
+    debug('🔄 State transition: [%s] --(%s)--> [%s]', from, trigger, to);
     return { success: true, from, to };
   }
 
