@@ -13,18 +13,29 @@ import {
   existsSync,
 } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const TERMINAL_LOGS_DIR = path.resolve('./logs/terminal');
+// 获取当前文件目录（用于确定绝对路径）
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// 使用绝对路径：从当前文件向上两级到 mvp-runner 目录
+const TERMINAL_LOGS_DIR = path.resolve(__dirname, '../../logs/terminal');
 const MAX_LOG_FILES = 10;
 
 /** 确保日志目录存在 */
-function ensureDir(): void {
-  mkdirSync(TERMINAL_LOGS_DIR, { recursive: true });
+function ensureDir(): boolean {
+  try {
+    mkdirSync(TERMINAL_LOGS_DIR, { recursive: true });
+    return true;
+  } catch (err) {
+    console.error('[terminal-logger] 创建日志目录失败:', (err as Error).message);
+    return false;
+  }
 }
 
 /** 获取当前日志文件路径（按启动时间命名） */
 function getCurrentLogPath(): string {
-  ensureDir();
   const now = new Date();
   const timestamp =
     now.getFullYear().toString() +
@@ -70,28 +81,55 @@ function cleanupOldLogs(): void {
 
 /** 终端日志捕获器 */
 export class TerminalLogger {
-  private logPath: string;
-  private writeStream: ReturnType<typeof createWriteStream>;
+  private logPath: string = '';
+  private writeStream: ReturnType<typeof createWriteStream> | null = null;
   private originalStdoutWrite: typeof process.stdout.write;
   private originalStderrWrite: typeof process.stderr.write;
   private isCapturing = false;
+  private hasError = false;
 
   constructor() {
-    cleanupOldLogs();
-    this.logPath = getCurrentLogPath();
-    this.writeStream = createWriteStream(this.logPath, { flags: 'a' });
     this.originalStdoutWrite = process.stdout.write.bind(process.stdout);
     this.originalStderrWrite = process.stderr.write.bind(process.stderr);
+
+    // 初始化日志目录和文件
+    if (!ensureDir()) {
+      this.hasError = true;
+      return;
+    }
+
+    cleanupOldLogs();
+    this.logPath = getCurrentLogPath();
+
+    try {
+      this.writeStream = createWriteStream(this.logPath, { flags: 'a' });
+      // 写入启动标记
+      this.writeStream.write(`\n[${new Date().toISOString()}] ========== 终端日志开始 ==========\n`);
+    } catch (err) {
+      console.error('[terminal-logger] 创建日志文件失败:', (err as Error).message);
+      this.hasError = true;
+    }
   }
 
   /** 开始捕获终端输出 */
   start(): void {
     if (this.isCapturing) return;
+    if (this.hasError || !this.writeStream) {
+      console.error('[terminal-logger] 无法启动，初始化失败');
+      return;
+    }
+
     this.isCapturing = true;
 
     const writeLog = (chunk: any) => {
-      const text = typeof chunk === 'string' ? chunk : chunk.toString();
-      this.writeStream.write(text);
+      if (this.writeStream && !this.writeStream.destroyed) {
+        try {
+          const text = typeof chunk === 'string' ? chunk : chunk.toString();
+          this.writeStream.write(text);
+        } catch {
+          // 忽略写入错误
+        }
+      }
     };
 
     // 拦截 stdout
@@ -117,13 +155,21 @@ export class TerminalLogger {
     process.stdout.write = this.originalStdoutWrite;
     process.stderr.write = this.originalStderrWrite;
 
-    this.writeStream.end();
+    if (this.writeStream) {
+      try {
+        this.writeStream.write(`[${new Date().toISOString()}] ========== 终端日志结束 ==========\n`);
+        this.writeStream.end();
+      } catch {
+        // 忽略关闭错误
+      }
+    }
+
     console.log(`[terminal-logger] 终端日志已停止，保存至 ${this.logPath}`);
   }
 
   /** 获取当前日志文件路径 */
-  getLogPath(): string {
-    return this.logPath;
+  getLogPath(): string | null {
+    return this.logPath || null;
   }
 
   /** 获取所有历史日志文件列表 */
@@ -147,6 +193,11 @@ export class TerminalLogger {
     } catch {
       return [];
     }
+  }
+
+  /** 获取日志目录路径 */
+  static getLogsDir(): string {
+    return TERMINAL_LOGS_DIR;
   }
 }
 
