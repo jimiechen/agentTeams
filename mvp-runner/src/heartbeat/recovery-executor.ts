@@ -152,14 +152,6 @@ export const RECOVERY_ACTIONS: Record<string, RecoveryAction> = {
     requiresConfirmation: false,
     maxAttempts: 2,
   },
-  refreshPage: {
-    id: 'refresh-page',
-    type: 'refresh',
-    description: '刷新页面，重置UI状态',
-    riskLevel: 'medium',
-    requiresConfirmation: false,
-    maxAttempts: 2,
-  },
   reportToGroup: {
     id: 'report-to-group',
     type: 'report',
@@ -699,17 +691,23 @@ export class RecoveryExecutor {
 
   /**
    * 崩溃恢复策略
-   * 1. 刷新页面
-   * 2. 报告崩溃状态
+   * 1. 报告崩溃状态
+   * 2. 请求人工介入（不自动刷新页面）
    */
   private async executeCrashedRecovery(): Promise<RecoveryResult[]> {
     debug('Executing crashed recovery strategy');
     const results: RecoveryResult[] = [];
 
-    results.push(await this.executeAction(RECOVERY_ACTIONS.refreshPage));
-    await this.delay(2000);
-
-    results.push(await this.executeAction(RECOVERY_ACTIONS.reportToGroup));
+    // 记录崩溃状态，请求人工介入
+    debug('🚨 System crashed, reporting to group for manual intervention');
+    results.push({
+      success: false,
+      action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'crash-manual-intervention', description: '系统崩溃，需要人工介入' },
+      attempts: 1,
+      timestamp: Date.now(),
+      duration: 0,
+      error: 'System crashed, manual intervention required',
+    });
 
     return results;
   }
@@ -860,11 +858,10 @@ export class RecoveryExecutor {
     switch (action.type) {
       case 'click':
         return await this.performClick(action.target!);
-      case 'refresh':
-        return await this.performRefresh();
       case 'report':
         return await this.performReport();
       default:
+        debug('Unknown action type: %s', action.type);
         return false;
     }
   }
@@ -897,22 +894,6 @@ export class RecoveryExecutor {
       return true;
     } catch (error) {
       debug('❌ Click failed [%s]: %s', selector, error instanceof Error ? error.message : String(error));
-      return false;
-    }
-  }
-
-  /**
-   * 执行页面刷新
-   */
-  private async performRefresh(): Promise<boolean> {
-    try {
-      debug('🔄 Refreshing page...');
-      // CDPClient 没有直接的 Page.reload 方法，使用 evaluate 执行 location.reload()
-      await this.cdp.evaluate<void>('location.reload()');
-      debug('✅ Page refreshed successfully');
-      return true;
-    } catch (error) {
-      debug('❌ Page refresh failed: %s', error instanceof Error ? error.message : String(error));
       return false;
     }
   }
