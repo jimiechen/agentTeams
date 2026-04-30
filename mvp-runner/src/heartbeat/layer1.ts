@@ -210,9 +210,16 @@ export class Layer1Collector {
     // 如果存在取消按钮，说明有任务在进行中
     if (payload.hasCancelBtn) return 'normal';
 
-    // 检查是否有进行中的任务
-    const hasInProgress = payload.tasks.some(t => t.status === 'in_progress');
-    if (hasInProgress) return 'normal';
+    // 检查是否有进行中的任务（包括非活动任务）
+    const inProgressTasks = payload.tasks.filter(t => t.status === 'in_progress');
+    if (inProgressTasks.length > 0) {
+      // 如果有进行中的任务但没有取消按钮，可能该任务在后台卡住了
+      const activeInProgress = inProgressTasks.find(t => t.isActive);
+      if (!activeInProgress && inProgressTasks.length > 0) {
+        debug('⚠️ In-progress task not active: %s', inProgressTasks.map(t => t.name).join(', '));
+      }
+      return 'normal';
+    }
 
     // 检查是否有活动任务
     const hasActive = payload.tasks.some(t => t.isActive);

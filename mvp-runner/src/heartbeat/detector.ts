@@ -242,6 +242,95 @@ export class HeartbeatDetector {
     if (to === 'background' || from === 'background') {
       await this.checkBackgroundTimeout();
     }
+
+    // 检查非活动的in_progress任务
+    if (payload?.tasks) {
+      await this.checkInactiveTasks(payload.tasks);
+    }
+  }
+
+  /**
+   * 检查非活动的in_progress任务
+   * 当发现非活动任务长时间in_progress时，尝试切换到该任务检查状态
+   */
+  private inactiveTaskTimers = new Map<string, number>();
+
+  private async checkInactiveTasks(tasks: Array<{ name: string; status: string; isActive: boolean }>): Promise<void> {
+    const inactiveInProgress = tasks.filter(t => t.status === 'in_progress' && !t.isActive);
+    
+    for (const task of inactiveInProgress) {
+      const firstSeen = this.inactiveTaskTimers.get(task.name);
+      const now = Date.now();
+      
+      if (!firstSeen) {
+        // 首次发现该非活动in_progress任务，记录时间
+        this.inactiveTaskTimers.set(task.name, now);
+        debug('⏳ Inactive in-progress task detected: %s, starting monitoring', task.name);
+      } else if (now - firstSeen > 300000) { // 5分钟超时
+        // 超过5分钟仍然是非活动in_progress，尝试切换到该任务检查
+        debug('🚨 Inactive task %s in_progress for >5min, attempting to switch and check', task.name);
+        await this.switchToTaskAndCheck(task.name);
+        // 重置计时器，避免频繁切换
+        this.inactiveTaskTimers.set(task.name, now);
+      }
+    }
+    
+    // 清理不再符合条件的任务
+    for (const [name, _] of this.inactiveTaskTimers) {
+      const stillExists = tasks.find(t => t.name === name && t.status === 'in_progress' && !t.isActive);
+      if (!stillExists) {
+        this.inactiveTaskTimers.delete(name);
+        debug('✅ Inactive task %s no longer in_progress, cleared timer', name);
+      }
+    }
+  }
+
+  /**
+   * 切换到指定任务并检查其状态
+   */
+  private async switchToTaskAndCheck(taskName: string): Promise<void> {
+    try {
+      // 点击任务项切换到该任务
+      const switched = await this.cdp.evaluate<boolean>(`
+        (() => {
+          const items = document.querySelectorAll('.index-module__task-item___zOpfg');
+          for (const item of items) {
+            const text = item.textContent || '';
+            if (text.includes('${taskName}')) {
+              item.click();
+              return true;
+            }
+          }
+          return false;
+        })()
+      `);
+      
+      if (switched) {
+        debug('✅ Switched to task %s to check status', taskName);
+        // 等待UI更新
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // 检查该任务是否有取消按钮（说明确实在运行）
+        const hasCancelBtn = await this.cdp.evaluate<boolean>(`
+          (() => {
+            const btns = Array.from(document.querySelectorAll('.icd-btn.icd-btn-tertiary'));
+            return btns.some(b => b.textContent?.includes('取消'));
+          })()
+        `);
+        
+        if (hasCancelBtn) {
+          debug('⚠️ Task %s has cancel button, may be stuck', taskName);
+          // 任务有取消按钮，说明确实在运行但可能卡住了
+          // 可以在这里触发恢复逻辑
+        } else {
+          debug('✅ Task %s no cancel button, likely completed or idle', taskName);
+        }
+      } else {
+        debug('❌ Failed to switch to task %s', taskName);
+      }
+    } catch (error) {
+      debug('Error switching to task %s: %s', taskName, error instanceof Error ? error.message : 'unknown');
+    }
   }
 
   /**
