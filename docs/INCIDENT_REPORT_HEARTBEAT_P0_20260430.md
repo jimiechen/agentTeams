@@ -209,8 +209,6 @@ L386: ❌ Retry button not found via any method: not-found
 
 ### 4.2 设计缺陷：恢复策略级联失效
 
-### 3.2 设计缺陷：恢复策略级联失效
-
 ```typescript
 // recovery-executor.ts 执行流程
 Step 1: 切换到interrupted任务 ✅ 
@@ -224,7 +222,7 @@ Step 4: 兜底策略 → 刷新页面 🔄 (触发3次编辑器重启)
 - 没有限制刷新次数，导致陷入死循环
 - 速率限制触发后，恢复操作被阻塞
 
-### 3.3 并发冲突风险
+### 4.3 并发冲突风险
 
 ```
 L223: Recovery already in progress, skipping
@@ -235,62 +233,6 @@ L342: Still in frozen state with interrupted tasks: DEVCLI, triggering recovery 
 - 心跳检测每5秒执行一次（L1间隔）
 - 恢复流程可能耗时超过5秒，导致并发检测
 - `Recovery already in progress`检查存在竞态条件
-
-### 3.4 关于"日志上没有中止的信号吗"
-
-**调查结果**: 
-- ✅ 该消息**不是系统自动发送的提示词**
-- ✅ 该消息是**用户在群聊中发送的询问**
-- 消息内容反映用户对系统行为的困惑：为什么检测日志没有发现中止信号，却触发了恢复流程
-
----
-
-## 四、代码审查发现
-
-### 4.1 致命缺陷 1: 重试按钮查找时机不当
-
-**文件**: `recovery-executor.ts`
-
-```typescript
-// 当前实现
-await this.delay(2000);  // 固定等待2秒
-const retryResult = await this.clickRetryButton();  // 可能UI还未渲染完成
-```
-
-**问题**: 
-- 2秒固定延迟不可靠
-- 没有轮询机制验证UI状态
-- 没有重试查找逻辑
-
-### 4.2 致命缺陷 2: 兜底策略过于激进
-
-**文件**: `recovery-executor.ts`
-
-```typescript
-// 兜底策略：刷新页面
-results.push(await this.executeAction(RECOVERY_ACTIONS.refreshPage));
-```
-
-**问题**: 
-- 刷新页面是破坏性操作，会丢失当前状态
-- 没有限制刷新次数
-- 连续刷新导致编辑器崩溃
-
-### 4.3 致命缺陷 3: 状态验证不准确
-
-**文件**: `layer1.ts`
-
-```typescript
-// Layer 1检测到interrupted即标记为frozen
-const hasInterrupted = payload.tasks.some(t => t.status === 'interrupted');
-if (hasInterrupted) {
-  return 'frozen';  // 直接标记为frozen
-}
-```
-
-**问题**: 
-- 没有区分"刚刚interrupted"和"已经interrupted很久"
-- 导致重复触发恢复流程
 
 ---
 

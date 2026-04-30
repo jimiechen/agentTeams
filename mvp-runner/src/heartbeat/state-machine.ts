@@ -20,6 +20,10 @@ export class HealthStateMachine {
   private transitionHistory: StateTransition[] = [];
   private readonly MAX_HISTORY = 50;
 
+  // Cooldown机制：防止恢复死循环
+  private lastRecoveryAttemptAt: number = 0;
+  private readonly RECOVERY_COOLDOWN_MS = 30000; // 30秒冷却
+
   // 状态转换矩阵
   private static readonly TRANSITIONS: Record<HeartbeatMode, Record<string, HeartbeatMode>> = {
     normal: {
@@ -124,5 +128,37 @@ export class HealthStateMachine {
     const lastTransition = this.transitionHistory[this.transitionHistory.length - 1];
     if (!lastTransition) return Infinity;
     return Date.now() - lastTransition.timestamp;
+  }
+
+  /**
+   * 检查是否应该触发恢复
+   * Cooldown机制确保30秒内不会重复触发恢复
+   */
+  shouldTriggerRecovery(state: HeartbeatMode): boolean {
+    if (state !== 'frozen' && state !== 'crashed') return false;
+
+    const elapsed = Date.now() - this.lastRecoveryAttemptAt;
+    if (elapsed < this.RECOVERY_COOLDOWN_MS) {
+      debug('Recovery cooldown active, %dms remaining', this.RECOVERY_COOLDOWN_MS - elapsed);
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * 记录恢复尝试时间
+   */
+  recordRecoveryAttempt(): void {
+    this.lastRecoveryAttemptAt = Date.now();
+    debug('Recovery attempt recorded at %d', this.lastRecoveryAttemptAt);
+  }
+
+  /**
+   * 获取Cooldown剩余时间
+   */
+  getCooldownRemaining(): number {
+    const elapsed = Date.now() - this.lastRecoveryAttemptAt;
+    return Math.max(0, this.RECOVERY_COOLDOWN_MS - elapsed);
   }
 }

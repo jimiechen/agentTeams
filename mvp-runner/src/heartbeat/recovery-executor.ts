@@ -50,6 +50,22 @@ export interface AuditLogEntry {
   sessionId: string;
 }
 
+// 诊断信息类型
+export interface RetryButtonDiagnosis {
+  timestamp: string;
+  error?: string;
+  totalButtonElements: number;
+  totalRoleButtons: number;
+  allAriaLabels: (string | null)[];
+  visibleButtonTexts: string[];
+  hasChatContainer: boolean;
+  chatTurnsCount: number;
+  hasModal: boolean;
+  currentUrl: string;
+  documentTitle: string;
+  lastTurns: string[];
+}
+
 export interface RecoveryConfig {
   enableAuditLog: boolean;
   auditLogPath: string;
@@ -168,6 +184,13 @@ export class RecoveryExecutor {
   private consecutiveFailures = 0;
   private maxConsecutiveFailures = 3;
 
+  // Promise门闩：防止并发恢复竞态条件
+  private recoveryPromise: Promise<RecoveryResult[]> | null = null;
+
+  // 三级熔断状态
+  private circuitBreakerLevel: 0 | 1 | 2 | 3 = 0; // 0=正常, 1=冷却, 2=暂停, 3=停止
+  private editorRestartCount = 0;
+
   constructor(
     cdp: CDPClient,
     stateMachine: HealthStateMachine,
@@ -182,24 +205,56 @@ export class RecoveryExecutor {
   // ============ 核心恢复方法 ============
 
   /**
-   * 执行恢复策略
-   * 根据当前状态选择合适的恢复动作
+   * 执行恢复策略 - Promise门闩模式
+   * 多次调用会共享同一个Promise，彻底消除竞态窗口
    */
   async executeRecovery(fromState: HeartbeatMode): Promise<RecoveryResult[]> {
-    if (this.isRecovering) {
-      debug('Recovery already in progress, skipping');
+    // 检查熔断状态
+    const circuitCheck = this.checkCircuitBreaker();
+    if (!circuitCheck.canProceed) {
+      debug('🚫 Recovery blocked by circuit breaker: %s', circuitCheck.reason);
+      return [{
+        success: false,
+        action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'circuit-breaker', description: '熔断器阻止恢复' },
+        attempts: 0,
+        timestamp: Date.now(),
+        duration: 0,
+        error: circuitCheck.reason,
+      }];
+    }
+
+    // 检查Cooldown（状态机层）
+    if (!this.stateMachine.shouldTriggerRecovery(fromState)) {
+      const remaining = this.stateMachine.getCooldownRemaining();
+      debug('Recovery cooldown active, %dms remaining', remaining);
       return [];
     }
 
-    // 检查冷却时间
-    const cooldownRemaining = this.config.recoveryCooldownMs - (Date.now() - this.lastRecoveryTime);
-    if (cooldownRemaining > 0) {
-      debug('Recovery cooldown active, wait %dms', cooldownRemaining);
-      return [];
+    // Promise门闩：如果已有恢复在进行，等待它完成
+    if (this.recoveryPromise) {
+      debug('Recovery already in progress, awaiting existing');
+      return this.recoveryPromise;
     }
 
+    // 记录恢复尝试时间
+    this.stateMachine.recordRecoveryAttempt();
+
+    // 创建新的恢复Promise
+    this.recoveryPromise = this.doExecuteRecovery(fromState)
+      .finally(() => {
+        this.recoveryPromise = null;
+        this.lastRecoveryTime = Date.now();
+      });
+
+    return this.recoveryPromise;
+  }
+
+  /**
+   * 实际执行恢复（私有方法）
+   */
+  private async doExecuteRecovery(fromState: HeartbeatMode): Promise<RecoveryResult[]> {
+    const startTime = Date.now();
     this.isRecovering = true;
-    this.lastRecoveryTime = Date.now();
 
     try {
       const results: RecoveryResult[] = [];
@@ -224,7 +279,7 @@ export class RecoveryExecutor {
 
       if (allFailed) {
         this.consecutiveFailures++;
-        debug('❌ Recovery failed: all %d actions failed (failure #%d/%d)', 
+        debug('❌ Recovery failed: all %d actions failed (failure #%d/%d)',
           results.length, this.consecutiveFailures, this.maxConsecutiveFailures);
         this.auditLog.push({
           timestamp: Date.now(),
@@ -235,7 +290,10 @@ export class RecoveryExecutor {
           operator: 'auto',
           sessionId: this.sessionId,
         });
-        
+
+        // 更新熔断状态
+        this.updateCircuitBreaker(false);
+
         // 如果连续失败超过限制，转为 crashed 状态
         if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
           debug('🚨 Max consecutive failures reached, transitioning to crashed');
@@ -243,6 +301,7 @@ export class RecoveryExecutor {
         }
       } else if (anySuccess) {
         this.consecutiveFailures = 0; // 重置失败计数
+        this.updateCircuitBreaker(true); // 重置熔断
         const successCount = results.filter((r) => r.success).length;
         debug('✅ Recovery succeeded: %d/%d actions succeeded', successCount, results.length);
         this.stateMachine.transition('recovery-success');
@@ -258,6 +317,7 @@ export class RecoveryExecutor {
       return results;
     } finally {
       this.isRecovering = false;
+      debug('Recovery completed in %dms', Date.now() - startTime);
     }
   }
 
@@ -295,19 +355,25 @@ export class RecoveryExecutor {
         });
       }
 
-      // 步骤3: 等待任务切换完成（UI渲染重试按钮）
-      await this.delay(2000);
+      // 步骤3: 等待UI进入就绪状态（前置检测）
+      debug('Step 2: Waiting for UI to be ready...');
+      const ready = await this.waitForInterruptedRendered(5000);
+      if (!ready.ready) {
+        debug('⚠️ UI not ready after 5s, proceeding with caution');
+      } else {
+        debug('✅ UI ready, hasRetryButton=%s', ready.hasRetryButton);
+      }
 
-      // 步骤4: 使用三路查找点击重试按钮
-      debug('Step 2: Attempting to click retry button (3-way lookup)...');
-      const retryResult = await this.clickRetryButton();
+      // 步骤4: 使用MutationObserver查找重试按钮（替代一次性查找）
+      debug('Step 3: Attempting to click retry button with MutationObserver...');
+      const retryResult = await this.clickRetryButtonWithObserver(8000);
 
       if (retryResult.clicked) {
-        debug('✅ Retry button clicked successfully via method: %s', retryResult.method);
+        debug('✅ Retry button clicked successfully via method: %s (attempts: %d)', retryResult.method, retryResult.attempts);
         results.push({
           success: true,
-          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'click-retry', description: `点击重试按钮 (${retryResult.method})` },
-          attempts: 1,
+          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'click-retry', description: `点击重试按钮 (${retryResult.method}, ${retryResult.attempts} attempts)` },
+          attempts: retryResult.attempts,
           timestamp: Date.now(),
           duration: 0,
         });
@@ -325,19 +391,110 @@ export class RecoveryExecutor {
           debug('⚠️ Task %s still interrupted after retry', interruptedTask);
         }
       } else {
-        debug('❌ Retry button not found via any method: %s', retryResult.method);
+        debug('❌ Retry button not found via any method: %s (attempts: %d)', retryResult.method, retryResult.attempts);
+
+        // 执行诊断脚本收集DOM信息
+        debug('Running diagnosis for retry button absence...');
+        const diagnosis = await this.diagnoseRetryButtonAbsence();
+        debug('Diagnosis complete: %d buttons found, %d with aria-label',
+          diagnosis.totalButtonElements, diagnosis.allAriaLabels.length);
+
+        // 记录到审计日志
+        this.auditLog.push({
+          timestamp: Date.now(),
+          action: 'diagnose-retry-button',
+          result: 'failure',
+          reason: `Retry button not found. DOM has ${diagnosis.totalButtonElements} buttons, ${diagnosis.chatTurnsCount} chat turns`,
+          riskLevel: 'medium',
+          operator: 'auto',
+          sessionId: this.sessionId,
+        });
+
+        // 不执行刷新页面，直接返回失败
+        results.push({
+          success: false,
+          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'retry-not-found', description: '重试按钮未找到' },
+          attempts: retryResult.attempts,
+          timestamp: Date.now(),
+          duration: 0,
+          error: `Retry button not found after ${retryResult.attempts} attempts. Visible buttons: ${diagnosis.visibleButtonTexts.join(', ')}`,
+        });
+
+        return results;
       }
     }
 
-    // 步骤6: 兜底策略 - 刷新页面
-    debug('All recovery attempts failed, refreshing page as last resort');
-    results.push(await this.executeAction(RECOVERY_ACTIONS.refreshPage));
-    await this.delay(2000);
-
-    // 步骤7: 报告状态
+    // 如果没有找到中断任务，报告状态
     results.push(await this.executeAction(RECOVERY_ACTIONS.reportToGroup));
 
     return results;
+  }
+
+  /**
+   * 诊断重试按钮缺失原因
+   * 收集DOM状态用于后续分析
+   */
+  private async diagnoseRetryButtonAbsence(): Promise<RetryButtonDiagnosis> {
+    try {
+      const diagnosis = await this.cdp.evaluate<RetryButtonDiagnosis>(`
+        (() => {
+          const allButtons = Array.from(document.querySelectorAll('button'));
+          const allRoleButtons = Array.from(document.querySelectorAll('[role="button"]'));
+
+          return {
+            timestamp: new Date().toISOString(),
+            totalButtonElements: allButtons.length,
+            totalRoleButtons: allRoleButtons.length,
+
+            // 所有按钮的 aria-label（排除空值）
+            allAriaLabels: allButtons
+              .map(b => b.getAttribute('aria-label'))
+              .filter(Boolean),
+
+            // 所有可见按钮的文本
+            visibleButtonTexts: allButtons
+              .filter(b => b.offsetParent !== null)
+              .map(b => (b.textContent || '').trim())
+              .filter(t => t.length > 0 && t.length < 30),
+
+            // 检查关键容器是否存在
+            hasChatContainer: !!document.querySelector('[class*="chat"]'),
+            chatTurnsCount: document.querySelectorAll('.chat-turn').length,
+
+            // 检查是否有遮罩层覆盖
+            hasModal: !!document.querySelector('[role="dialog"], [class*="modal"], [class*="mask"]'),
+
+            // 当前 URL 和页面标题
+            currentUrl: location.href,
+            documentTitle: document.title,
+
+            // 倒数三个 chat-turn 的文本
+            lastTurns: Array.from(document.querySelectorAll('.chat-turn'))
+              .slice(-3)
+              .map(t => (t.textContent || '').slice(0, 100))
+          };
+        })()
+      `);
+
+      debug('Retry button diagnosis: %j', diagnosis);
+      return diagnosis;
+    } catch (err) {
+      debug('Diagnosis failed: %s', err instanceof Error ? err.message : 'unknown');
+      return {
+        timestamp: new Date().toISOString(),
+        error: 'Diagnosis failed',
+        totalButtonElements: 0,
+        totalRoleButtons: 0,
+        allAriaLabels: [],
+        visibleButtonTexts: [],
+        hasChatContainer: false,
+        chatTurnsCount: 0,
+        hasModal: false,
+        currentUrl: '',
+        documentTitle: '',
+        lastTurns: []
+      };
+    }
   }
 
   /**
@@ -389,6 +546,76 @@ export class RecoveryExecutor {
   }
 
   /**
+   * 使用MutationObserver查找重试按钮
+   * 响应时间从最差5秒降到毫秒级
+   */
+  private async clickRetryButtonWithObserver(timeoutMs = 5000): Promise<{ clicked: boolean; method: string; attempts: number }> {
+    try {
+      const result = await this.cdp.evaluate<{ clicked: boolean; method: string; attempts: number }>(`
+        new Promise((resolve) => {
+          const tryFind = () => {
+            // 多路查找
+            const candidates = [
+              document.querySelector('button[aria-label="重试"]'),
+              document.querySelector('button[aria-label*="重试"]'),  // 模糊匹配
+              document.querySelector('[role="button"][aria-label="重试"]'),  // role兜底
+              ...Array.from(document.querySelectorAll('button')).filter(b =>
+                b.textContent?.trim() === '重试' && b.offsetParent !== null  // 必须可见
+              )
+            ];
+
+            const btn = candidates.find(b => b && !b.disabled);
+            if (btn) {
+              btn.click();
+              return { clicked: true, method: 'observer-found' };
+            }
+            return null;
+          };
+
+          // 立即尝试一次
+          const immediate = tryFind();
+          if (immediate) {
+            resolve({ ...immediate, attempts: 1 });
+            return;
+          }
+
+          // MutationObserver监听DOM变化
+          let attemptCount = 1;
+          const observer = new MutationObserver(() => {
+            attemptCount++;
+            const result = tryFind();
+            if (result) {
+              observer.disconnect();
+              resolve({ ...result, attempts: attemptCount });
+            }
+          });
+          observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true
+          });
+
+          // 超时兜底
+          setTimeout(() => {
+            observer.disconnect();
+            resolve({
+              clicked: false,
+              method: 'timeout-after-observer',
+              attempts: attemptCount
+            });
+          }, ${timeoutMs});
+        })
+      `);
+
+      debug('Observer-based click result: %o', result);
+      return result;
+    } catch (err) {
+      debug('Observer-based click failed: %s', err instanceof Error ? err.message : 'unknown');
+      return { clicked: false, method: 'error', attempts: 0 };
+    }
+  }
+
+  /**
    * 查找中断的任务
    */
   private async findInterruptedTask(): Promise<string | null> {
@@ -411,6 +638,36 @@ export class RecoveryExecutor {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 等待UI进入"可重试"状态
+   * 三个就绪信号：中断文本出现、思考状态结束
+   */
+  private async waitForInterruptedRendered(timeoutMs = 5000): Promise<{ ready: boolean; hasRetryButton: boolean }> {
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeoutMs) {
+      const ready = await this.cdp.evaluate<{ ready: boolean; hasRetryButton: boolean }>(`
+        (() => {
+          // 三个就绪信号
+          const hasInterruptText = document.body.textContent?.includes('手动终止输出')
+            || document.body.textContent?.includes('已中断');
+          const hasRetryButton = !!document.querySelector('button[aria-label*="重试"]');
+          const stoppedThinking = !document.querySelector('[class*="thinking"]');
+
+          return {
+            ready: hasInterruptText && stoppedThinking,
+            hasRetryButton
+          };
+        })()
+      `);
+
+      if (ready.ready) return ready;
+      await this.delay(300);
+    }
+
+    return { ready: false, hasRetryButton: false };
   }
 
   /**
@@ -782,5 +1039,100 @@ export class RecoveryExecutor {
     this.lastRecoveryTime = 0;
     this.isRecovering = false;
     this.sessionId = this.generateSessionId();
+    this.recoveryPromise = null;
+    this.circuitBreakerLevel = 0;
+    this.consecutiveFailures = 0;
+    this.editorRestartCount = 0;
+  }
+
+  // ============ 三级熔断策略 ============
+
+  /**
+   * 检查熔断状态
+   */
+  private checkCircuitBreaker(): { canProceed: boolean; reason?: string } {
+    switch (this.circuitBreakerLevel) {
+      case 3:
+        return { canProceed: false, reason: 'Circuit breaker LEVEL 3: Daemon stopped, manual intervention required' };
+      case 2:
+        return { canProceed: false, reason: 'Circuit breaker LEVEL 2: Heartbeat paused, ops team notified' };
+      case 1:
+        // Level 1在Cooldown中处理
+        return { canProceed: true };
+      default:
+        return { canProceed: true };
+    }
+  }
+
+  /**
+   * 更新熔断状态
+   */
+  private updateCircuitBreaker(success: boolean): void {
+    if (success) {
+      // 成功时重置失败计数和熔断
+      this.consecutiveFailures = 0;
+      if (this.circuitBreakerLevel > 0) {
+        debug('Circuit breaker reset to LEVEL 0');
+        this.circuitBreakerLevel = 0;
+      }
+      return;
+    }
+
+    // 失败时增加计数
+    this.consecutiveFailures++;
+
+    // Level 1: 3次失败，进入30秒冷却（由Cooldown机制处理）
+    if (this.consecutiveFailures >= 3 && this.circuitBreakerLevel < 1) {
+      this.circuitBreakerLevel = 1;
+      debug('Circuit breaker elevated to LEVEL 1: 30s cooldown');
+      this.reportToGroup('Level 1: 连续3次恢复失败，进入30秒冷却期');
+    }
+
+    // Level 2: 6次失败，暂停该任务的心跳检测
+    if (this.consecutiveFailures >= 6 && this.circuitBreakerLevel < 2) {
+      this.circuitBreakerLevel = 2;
+      debug('🚨 Circuit breaker elevated to LEVEL 2: Heartbeat paused, notifying ops');
+      this.reportToGroup('🚨 Level 2: 连续6次恢复失败，暂停DEVCLI心跳检测，请@运维人工介入');
+    }
+
+    // Level 3: 编辑器重启2次，完全停止daemon
+    if (this.editorRestartCount >= 2 && this.circuitBreakerLevel < 3) {
+      this.circuitBreakerLevel = 3;
+      debug('🔴 Circuit breaker elevated to LEVEL 3: Daemon stopped');
+      this.reportToGroup('🔴 Level 3: 编辑器重启2次，完全停止daemon，输出人工介入指引');
+      this.outputManualInterventionGuide();
+    }
+  }
+
+  /**
+   * 记录编辑器重启
+   */
+  recordEditorRestart(): void {
+    this.editorRestartCount++;
+    debug('Editor restart recorded: #%d', this.editorRestartCount);
+    this.updateCircuitBreaker(false);
+  }
+
+  /**
+   * 输出人工介入指引
+   */
+  private outputManualInterventionGuide(): void {
+    debug('========================================');
+    debug('🔴 SYSTEM HALTED - Manual Intervention Required');
+    debug('========================================');
+    debug('Reason: Editor restarted %d times, recovery failed', this.editorRestartCount);
+    debug('Action Required:');
+    debug('  1. Check Trae IDE status');
+    debug('  2. Manually resume DEVCLI task if interrupted');
+    debug('  3. Restart mvp-runner daemon');
+    debug('========================================');
+  }
+
+  /**
+   * 报告到群聊（预留接口）
+   */
+  private reportToGroup(message: string): void {
+    debug('[GROUP REPORT] %s', message);
+    // 实际实现中可以通过飞书API发送消息
   }
 }
