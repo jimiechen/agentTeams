@@ -9,8 +9,9 @@ import type {
   DetectionResult,
   HeartbeatMode,
   Signal,
+  BackgroundStateContext,
 } from './types.js';
-import { DEFAULT_HEARTBEAT_CONFIG } from './types.js';
+import { DEFAULT_HEARTBEAT_CONFIG, DEFAULT_BACKGROUND_TIMEOUT_CONFIG } from './types.js';
 import { HealthStateMachine } from './state-machine.js';
 import { Layer1Collector, type Layer1Payload } from './layer1.js';
 import { RecoveryExecutor } from './recovery-executor.js';
@@ -204,13 +205,104 @@ export class HeartbeatDetector {
 
           this.onModeChange?.(previousState, transition.to, context);
 
-          // 如果进入异常状态，触发自动恢复
-          if (transition.to === 'frozen' || transition.to === 'crashed') {
-            debug('Abnormal state detected, triggering recovery');
-            await this.recoveryExecutor.executeRecovery(transition.to);
-          }
+          // 处理状态转换后的逻辑
+          await this.handleStateTransition(previousState, transition.to, payload);
         }
       }
+    }
+  }
+
+  /**
+   * 处理状态转换后的逻辑
+   */
+  private async handleStateTransition(
+    from: HeartbeatMode,
+    to: HeartbeatMode,
+    payload?: Layer1Payload
+  ): Promise<void> {
+    // 进入background状态时初始化上下文
+    if (to === 'background') {
+      this.stateMachine.enterBackground();
+      debug('Entered background state, starting timeout monitoring');
+    }
+
+    // 离开background状态时清除上下文
+    if (from === 'background' && to !== 'background') {
+      this.stateMachine.clearBackgroundContext();
+      debug('Left background state, cleared timeout monitoring');
+    }
+
+    // 如果进入异常状态，触发自动恢复
+    if (to === 'frozen' || to === 'crashed') {
+      debug('Abnormal state detected, triggering recovery');
+      await this.recoveryExecutor.executeRecovery(to);
+    }
+
+    // 如果在background状态，检查是否超时
+    if (to === 'background' || from === 'background') {
+      await this.checkBackgroundTimeout();
+    }
+  }
+
+  /**
+   * 检查background模式是否超时
+   */
+  private async checkBackgroundTimeout(): Promise<void> {
+    const bgConfig = this.config.backgroundTimeoutRecovery || DEFAULT_BACKGROUND_TIMEOUT_CONFIG;
+    if (!bgConfig.enabled) return;
+
+    const ctx = this.stateMachine.getBackgroundContext();
+    if (!ctx) return;
+
+    try {
+      // 采样当前DOM快照
+      const snapshot = await this.computeDomSnapshot();
+
+      // 对比快照，变化则重置计时器
+      if (snapshot !== ctx.lastDomSnapshot) {
+        this.stateMachine.updateBackgroundContext({
+          lastActivityAt: Date.now(),
+          lastDomSnapshot: snapshot,
+        });
+        debug('Background activity detected, reset timeout timer');
+        return;
+      }
+
+      // 检查是否超时
+      const silentDuration = Date.now() - ctx.lastActivityAt;
+      const timeoutMs = bgConfig.silentTimeoutMs || 300000;
+
+      if (silentDuration > timeoutMs) {
+        debug('Background timeout detected after %dms, triggering recovery', silentDuration);
+        await this.recoveryExecutor.executeBackgroundTimeout(ctx);
+      }
+    } catch (error) {
+      debug('Background timeout check error: %s', error instanceof Error ? error.message : 'unknown');
+    }
+  }
+
+  /**
+   * 计算DOM快照
+   */
+  private async computeDomSnapshot(): Promise<string> {
+    try {
+      return await this.cdp.evaluate<string>(`
+        (() => {
+          const term = document.querySelector('.terminal, .chat-container, [class*="chat"]');
+          if (!term) return '';
+          const tail = term.textContent?.slice(-500) ?? '';
+          // 简单的哈希计算
+          let hash = 0;
+          for (let i = 0; i < tail.length; i++) {
+            const char = tail.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash;
+          }
+          return `${term.scrollHeight}-${tail.length}-${hash}`;
+        })()
+      `);
+    } catch {
+      return '';
     }
   }
 

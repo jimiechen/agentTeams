@@ -11,7 +11,8 @@ import {
   type ButtonWhitelistEntry,
 } from '../actions/button-whitelist.js';
 import { recoveryRateLimiter, type RateLimitResult } from '../utils/rate-limiter.js';
-import type { HeartbeatMode } from './types.js';
+import type { HeartbeatMode, BackgroundTimeoutRecoveryConfig } from './types.js';
+import { DEFAULT_BACKGROUND_TIMEOUT_CONFIG } from './types.js';
 import { HealthStateMachine } from './state-machine.js';
 import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'fs';
 import path from 'path';
@@ -74,6 +75,7 @@ export interface RecoveryConfig {
   enableAutoRecovery: boolean;
   maxRecoveryAttempts: number;
   recoveryCooldownMs: number;
+  backgroundTimeoutRecovery?: BackgroundTimeoutRecoveryConfig;
 }
 
 export const DEFAULT_RECOVERY_CONFIG: RecoveryConfig = {
@@ -1107,6 +1109,272 @@ export class RecoveryExecutor {
     debug('  2. Manually resume DEVCLI task if interrupted');
     debug('  3. Restart mvp-runner daemon');
     debug('========================================');
+  }
+
+  // ============ Background 超时恢复 ============
+
+  /**
+   * Background 模式超时恢复
+   * 1. 检查熔断和次数限制
+   * 2. 点击"后台运行"按钮
+   * 3. 动态等待"取消"按钮就绪
+   * 4. 二次确认DOM是否活跃
+   * 5. 点击"取消"按钮
+   * 6. 更新计数和Cooldown
+   */
+  async executeBackgroundTimeout(ctx: import('./state-machine.js').BackgroundStateContext): Promise<RecoveryResult[]> {
+    const taskId = this.getCurrentTaskId();
+    const bgConfig = this.config.backgroundTimeoutRecovery || DEFAULT_BACKGROUND_TIMEOUT_CONFIG;
+    const results: RecoveryResult[] = [];
+
+    // 熔断检查
+    if (ctx.triggerCount >= bgConfig.maxTriggerPerTask) {
+      const msg = `任务 ${taskId} background 超时恢复已达 ${bgConfig.maxTriggerPerTask} 次上限`;
+      debug('🚫 %s', msg);
+      await this.notifyHuman(msg);
+      return [{
+        success: false,
+        action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'human-required' },
+        attempts: 0,
+        timestamp: Date.now(),
+        duration: 0,
+        error: 'Max trigger count reached',
+      }];
+    }
+
+    // Cooldown 检查
+    if (this.isInCooldown('background-timeout')) {
+      return [{
+        success: false,
+        action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'cooldown' },
+        attempts: 0,
+        timestamp: Date.now(),
+        duration: 0,
+        error: 'Recovery in cooldown',
+      }];
+    }
+
+    const startTime = Date.now();
+
+    try {
+      // Step 1: 点击"后台运行"按钮
+      debug('Step 1: Clicking "后台运行" button...');
+      const bgClicked = await this.cdp.evaluate<boolean>(`
+        (() => {
+          const btns = Array.from(document.querySelectorAll('.icd-btn.icd-btn-tertiary'));
+          const bgBtn = btns.find(b => b.textContent?.includes('后台运行'));
+          if (bgBtn) { bgBtn.click(); return true; }
+          return false;
+        })()
+      `);
+
+      if (!bgClicked) {
+        debug('❌ Background button not found');
+        return [{
+          success: false,
+          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'bg-btn-not-found' },
+          attempts: 1,
+          timestamp: Date.now(),
+          duration: 0,
+          error: 'Background button not found',
+        }];
+      }
+      debug('✅ Background button clicked');
+
+      // Step 2: 动态等待"取消"按钮就绪
+      debug('Step 2: Waiting for "取消" button to be ready...');
+      const waitResult = bgConfig.dynamicWait.enabled
+        ? await this.waitForButton(
+            '取消',
+            bgConfig.clickIntervals.maxWaitMs,
+            bgConfig.dynamicWait.minWaitBeforePollMs,
+            bgConfig.clickIntervals.pollIntervalMs
+          )
+        : { ready: true, actualWaitMs: bgConfig.clickIntervals.afterBackgroundClickMs };
+
+      if (bgConfig.dynamicWait.enabled) {
+        if (waitResult.ready) {
+          debug('✅ "取消" button ready after %dms', waitResult.actualWaitMs);
+        } else {
+          debug('⚠️ "取消" button not ready after %dms, proceeding anyway', waitResult.actualWaitMs);
+        }
+      } else {
+        await this.delay(bgConfig.clickIntervals.afterBackgroundClickMs);
+        waitResult.actualWaitMs = bgConfig.clickIntervals.afterBackgroundClickMs;
+      }
+
+      // Step 3: 二次确认DOM是否活跃
+      debug('Step 3: Checking DOM activity...');
+      const currentSnapshot = await this.computeDomSnapshot();
+      if (currentSnapshot !== ctx.lastDomSnapshot) {
+        debug('✅ DOM activity detected, task self-recovered');
+        return [{
+          success: true,
+          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'self-recovered' },
+          attempts: 1,
+          timestamp: Date.now(),
+          duration: waitResult.actualWaitMs,
+        }];
+      }
+      debug('⚠️ No DOM activity detected, proceeding to click cancel');
+
+      // Step 4: 点击"取消"按钮
+      debug('Step 4: Clicking "取消" button...');
+      const cancelClicked = await this.cdp.evaluate<boolean>(`
+        (() => {
+          const btns = Array.from(document.querySelectorAll('button'));
+          const cancelBtn = btns.find(b =>
+            b.textContent?.trim() === '取消' &&
+            b.offsetParent !== null
+          );
+          if (cancelBtn) { cancelBtn.click(); return true; }
+          return false;
+        })()
+      `);
+
+      if (!cancelClicked) {
+        debug('❌ Cancel button not found');
+        return [{
+          success: false,
+          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'cancel-btn-not-found' },
+          attempts: 1,
+          timestamp: Date.now(),
+          duration: waitResult.actualWaitMs,
+          error: 'Cancel button not found',
+        }];
+      }
+      debug('✅ Cancel button clicked');
+
+      // Step 5: 更新计数和Cooldown
+      ctx.triggerCount += 1;
+      this.setCooldown('background-timeout', bgConfig.cooldownMs);
+      debug('✅ Background timeout recovery completed. Trigger count: %d/%d',
+        ctx.triggerCount, bgConfig.maxTriggerPerTask);
+
+      const duration = Date.now() - startTime;
+      return [{
+        success: true,
+        action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'bg-timeout-recovered' },
+        attempts: 1,
+        timestamp: Date.now(),
+        duration,
+      }];
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      debug('❌ Background timeout recovery error: %s', errorMsg);
+      return [{
+        success: false,
+        action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'bg-timeout-error' },
+        attempts: 1,
+        timestamp: Date.now(),
+        duration: Date.now() - startTime,
+        error: errorMsg,
+      }];
+    }
+  }
+
+  /**
+   * 动态等待指定按钮就绪
+   * 先等最小下限，然后轮询检测目标按钮可用性
+   */
+  private async waitForButton(
+    buttonMatcher: string,
+    maxWaitMs: number,
+    minWaitMs: number = 5000,
+    pollIntervalMs: number = 1000
+  ): Promise<{ ready: boolean; actualWaitMs: number }> {
+    const startTime = Date.now();
+
+    // Step 1: 保守下限等待
+    debug('Waiting minimum %dms before polling...', minWaitMs);
+    await this.delay(minWaitMs);
+
+    // Step 2: 轮询检测
+    while (Date.now() - startTime < maxWaitMs) {
+      const ready = await this.cdp.evaluate<boolean>(`
+        (() => {
+          const btns = Array.from(document.querySelectorAll('button'));
+          const target = btns.find(b =>
+            b.textContent?.trim() === '${buttonMatcher}' &&
+            b.offsetParent !== null &&
+            !b.disabled &&
+            b.getBoundingClientRect().width > 0
+          );
+          return !!target;
+        })()
+      `);
+
+      if (ready) {
+        const actualWaitMs = Date.now() - startTime;
+        debug('Button "%s" ready after %dms', buttonMatcher, actualWaitMs);
+        return { ready: true, actualWaitMs };
+      }
+
+      await this.delay(pollIntervalMs);
+    }
+
+    debug('Button "%s" not ready after %dms', buttonMatcher, maxWaitMs);
+    return { ready: false, actualWaitMs: maxWaitMs };
+  }
+
+  /**
+   * 计算DOM快照
+   */
+  private async computeDomSnapshot(): Promise<string> {
+    try {
+      return await this.cdp.evaluate<string>(`
+        (() => {
+          const term = document.querySelector('.terminal, .chat-container, [class*="chat"]');
+          if (!term) return '';
+          const tail = term.textContent?.slice(-500) ?? '';
+          // 简单的哈希计算
+          let hash = 0;
+          for (let i = 0; i < tail.length; i++) {
+            const char = tail.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash;
+          }
+          return \`${term.scrollHeight}-\${tail.length}-\${hash}\`;
+        })()
+      `);
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * 获取当前任务ID
+   */
+  private getCurrentTaskId(): string {
+    // 从状态机或配置中获取当前任务ID
+    return 'unknown';
+  }
+
+  /**
+   * 通知人工介入
+   */
+  private async notifyHuman(message: string): Promise<void> {
+    debug('[NOTIFY HUMAN] %s', message);
+    this.reportToGroup(message);
+  }
+
+  /**
+   * 检查是否在Cooldown中
+   */
+  private cooldownMap = new Map<string, number>();
+
+  private isInCooldown(key: string): boolean {
+    const until = this.cooldownMap.get(key);
+    if (!until) return false;
+    return Date.now() < until;
+  }
+
+  /**
+   * 设置Cooldown
+   */
+  private setCooldown(key: string, ms: number): void {
+    this.cooldownMap.set(key, Date.now() + ms);
+    debug('Cooldown set for "%s" until %d', key, Date.now() + ms);
   }
 
   /**

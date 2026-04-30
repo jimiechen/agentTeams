@@ -38,6 +38,26 @@ export interface DetectionResult {
   cost: number;
 }
 
+export interface BackgroundTimeoutRecoveryConfig {
+  enabled: boolean;
+  silentTimeoutMs: number;
+  domSampleIntervalMs: number;
+  clickIntervals: {
+    afterBackgroundClickMs: number;
+    afterCancelClickMs: number;
+    minWaitMs: number;
+    maxWaitMs: number;
+    pollIntervalMs: number;
+  };
+  dynamicWait: {
+    enabled: boolean;
+    minWaitBeforePollMs: number;
+  };
+  maxTriggerPerTask: number;
+  cooldownMs: number;
+  feishuNotify: boolean;
+}
+
 export interface HeartbeatConfig {
   layer1Interval: number;
   layer2Interval: number;
@@ -46,7 +66,28 @@ export interface HeartbeatConfig {
   retryDelay: number;
   signalBufferSize: number;
   confidenceThreshold: number;
+  backgroundTimeoutRecovery?: Partial<BackgroundTimeoutRecoveryConfig>;
 }
+
+export const DEFAULT_BACKGROUND_TIMEOUT_CONFIG: BackgroundTimeoutRecoveryConfig = {
+  enabled: true,
+  silentTimeoutMs: 300000, // 5分钟
+  domSampleIntervalMs: 10000, // 10秒
+  clickIntervals: {
+    afterBackgroundClickMs: 30000, // 30秒
+    afterCancelClickMs: 10000, // 10秒
+    minWaitMs: 5000, // 5秒
+    maxWaitMs: 120000, // 120秒
+    pollIntervalMs: 1000, // 1秒
+  },
+  dynamicWait: {
+    enabled: true,
+    minWaitBeforePollMs: 5000, // 5秒
+  },
+  maxTriggerPerTask: 2,
+  cooldownMs: 60000, // 60秒
+  feishuNotify: true,
+};
 
 export const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
   layer1Interval: 5000,

@@ -15,6 +15,13 @@ export interface StateTransition {
   timestamp: number;
 }
 
+export interface BackgroundStateContext {
+  enteredAt: number;
+  lastActivityAt: number;
+  lastDomSnapshot: string;
+  triggerCount: number;
+}
+
 export class HealthStateMachine {
   private currentState: HeartbeatMode = 'normal';
   private transitionHistory: StateTransition[] = [];
@@ -23,6 +30,9 @@ export class HealthStateMachine {
   // Cooldown机制：防止恢复死循环
   private lastRecoveryAttemptAt: number = 0;
   private readonly RECOVERY_COOLDOWN_MS = 30000; // 30秒冷却
+
+  // Background模式状态上下文
+  private backgroundContext: BackgroundStateContext | null = null;
 
   // 状态转换矩阵
   private static readonly TRANSITIONS: Record<HeartbeatMode, Record<string, HeartbeatMode>> = {
@@ -119,6 +129,44 @@ export class HealthStateMachine {
   reset(): void {
     this.currentState = 'normal';
     this.transitionHistory = [];
+    this.backgroundContext = null;
+  }
+
+  /**
+   * 进入background状态时初始化上下文
+   */
+  enterBackground(): BackgroundStateContext {
+    this.backgroundContext = {
+      enteredAt: Date.now(),
+      lastActivityAt: Date.now(),
+      lastDomSnapshot: '',
+      triggerCount: 0,
+    };
+    debug('Background context initialized at %d', this.backgroundContext.enteredAt);
+    return this.backgroundContext;
+  }
+
+  /**
+   * 获取background状态上下文
+   */
+  getBackgroundContext(): BackgroundStateContext | null {
+    return this.backgroundContext;
+  }
+
+  /**
+   * 更新background状态上下文
+   */
+  updateBackgroundContext(updates: Partial<BackgroundStateContext>): void {
+    if (!this.backgroundContext) return;
+    this.backgroundContext = { ...this.backgroundContext, ...updates };
+  }
+
+  /**
+   * 清除background状态上下文
+   */
+  clearBackgroundContext(): void {
+    this.backgroundContext = null;
+    debug('Background context cleared');
   }
 
   /**

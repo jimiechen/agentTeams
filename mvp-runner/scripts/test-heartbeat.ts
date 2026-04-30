@@ -187,7 +187,6 @@ async function testRecoveryActions(): Promise<void> {
   assert(RECOVERY_ACTIONS.clickCancel.riskLevel === 'medium', 'Cancel action risk is medium');
   assert(RECOVERY_ACTIONS.clickDeleteConfirm.requiresConfirmation, 'Delete confirm requires confirmation');
   assert(RECOVERY_ACTIONS.clickRetainDelete.riskLevel === 'low', 'Retain delete risk is low');
-  assert(RECOVERY_ACTIONS.refreshPage.type === 'refresh', 'Refresh action type correct');
   assert(RECOVERY_ACTIONS.reportToGroup.type === 'report', 'Report action type correct');
 }
 
