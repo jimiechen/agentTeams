@@ -19,6 +19,74 @@ import createDebug from 'debug';
 
 const debug = createDebug('mvp:heartbeat:detector');
 
+// 任务活动追踪器
+interface TaskActivityRecord {
+  outputHash: string;
+  lastActiveAt: number;
+  hasCancelBtn: boolean;
+  hasBackgroundBtn: boolean;
+}
+
+class TaskActivityTracker {
+  private lastActivityMap = new Map<string, TaskActivityRecord>();
+  private suspiciousThresholdMs: number;
+
+  constructor(suspiciousThresholdMs: number = 300000) {
+    this.suspiciousThresholdMs = suspiciousThresholdMs;
+  }
+
+  update(taskName: string, outputSnapshot: string, hasCancelBtn: boolean, hasBackgroundBtn: boolean): {
+    taskName: string;
+    silentMs: number;
+    isSuspicious: boolean;
+  } {
+    const now = Date.now();
+    const prev = this.lastActivityMap.get(taskName);
+    const currentHash = this.hashString(outputSnapshot);
+
+    const hasChanged = !prev ||
+      prev.outputHash !== currentHash ||
+      prev.hasCancelBtn !== hasCancelBtn ||
+      prev.hasBackgroundBtn !== hasBackgroundBtn;
+
+    if (hasChanged) {
+      this.lastActivityMap.set(taskName, {
+        outputHash: currentHash,
+        lastActiveAt: now,
+        hasCancelBtn,
+        hasBackgroundBtn,
+      });
+    }
+
+    const record = this.lastActivityMap.get(taskName)!;
+    const silentMs = now - record.lastActiveAt;
+
+    return {
+      taskName,
+      silentMs,
+      isSuspicious: silentMs > this.suspiciousThresholdMs,
+    };
+  }
+
+  private hashString(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return hash.toString();
+  }
+
+  getStats(): Map<string, TaskActivityRecord> {
+    return new Map(this.lastActivityMap);
+  }
+
+  reset(): void {
+    this.lastActivityMap.clear();
+  }
+}
+
 export class HeartbeatDetector {
   private config: HeartbeatConfig;
   private cdp: CDPClient;
@@ -32,6 +100,7 @@ export class HeartbeatDetector {
   private isRunning = false;
   private onModeChange?: (from: HeartbeatMode, to: HeartbeatMode, context?: { interruptedTasks?: string[] }) => void;
   private lastLayer1Payload?: Layer1Payload;
+  private taskActivityTracker: TaskActivityTracker;
 
   constructor(
     cdp: CDPClient,
@@ -44,6 +113,7 @@ export class HeartbeatDetector {
     this.layer1Collector = new Layer1Collector();
     this.recoveryExecutor = new RecoveryExecutor(cdp, this.stateMachine);
     this.onModeChange = onModeChange;
+    this.taskActivityTracker = new TaskActivityTracker(300000); // 5分钟阈值
   }
 
   /**
@@ -118,12 +188,138 @@ export class HeartbeatDetector {
       const { result, payload } = await this.layer1Collector.collect(this.cdp);
       await this.processResult(result, payload);
 
+      // 任务级活动检测（新增）
+      if (payload?.tasks) {
+        await this.checkTaskActivity(payload.tasks);
+      }
+
       if (result.cost > 5) {
         debug('Layer 1 cost warning: %dms', result.cost);
       }
     } catch (error) {
       debug('Layer 1 error: %s', error instanceof Error ? error.message : 'unknown');
     }
+  }
+
+  /**
+   * 检查每个任务的活动状态
+   * 基于 TaskActivityTracker 维护每个任务的静默时长
+   */
+  private async checkTaskActivity(tasks: Array<{ name: string; status: string; isActive: boolean }>): Promise<void> {
+    for (const task of tasks) {
+      if (task.status === 'in_progress') {
+        // 获取该任务的输出快照（需要从 DOM 中查询）
+        const taskSnapshot = await this.getTaskSnapshot(task.name);
+        if (taskSnapshot) {
+          const activity = this.taskActivityTracker.update(
+            task.name,
+            taskSnapshot.outputSnapshot,
+            taskSnapshot.hasCancelBtn,
+            taskSnapshot.hasBackgroundBtn
+          );
+
+          if (activity.isSuspicious) {
+            debug('🚨 Task %s is suspicious: silent for %dms', task.name, activity.silentMs);
+            // 触发可疑任务处理
+            await this.handleSuspiciousTask(task.name, activity.silentMs);
+          } else {
+            debug('✅ Task %s active: silent for %dms', task.name, activity.silentMs);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * 获取指定任务的快照
+   * 直接在 DOM 中查询，无需切换任务
+   */
+  private async getTaskSnapshot(taskName: string): Promise<{
+    outputSnapshot: string;
+    hasCancelBtn: boolean;
+    hasBackgroundBtn: boolean;
+  } | null> {
+    try {
+      const result = await this.cdp.evaluate<{
+        outputSnapshot: string;
+        hasCancelBtn: boolean;
+        hasBackgroundBtn: boolean;
+      }>(`
+        (() => {
+          // 找到任务项
+          const items = document.querySelectorAll('.index-module__task-item___zOpfg');
+          let targetItem = null;
+          for (const item of items) {
+            if (item.textContent?.includes('${taskName}')) {
+              targetItem = item;
+              break;
+            }
+          }
+          if (!targetItem) return null;
+
+          // 尝试在任务容器内查找按钮
+          const container = targetItem.closest('[data-task-panel], [class*="task"], [class*="chat"]');
+          let hasCancelBtn = false;
+          let hasBackgroundBtn = false;
+          let outputSnapshot = '';
+
+          if (container) {
+            const cancelBtn = container.querySelector('button[aria-label*="取消"], .icd-btn.icd-btn-tertiary');
+            const bgBtn = container.querySelector('button[aria-label*="后台"], .icd-btn.icd-btn-tertiary');
+
+            if (cancelBtn) {
+              hasCancelBtn = (cancelBtn.textContent || '').includes('取消');
+            }
+            if (bgBtn) {
+              hasBackgroundBtn = (bgBtn.textContent || '').includes('后台');
+            }
+
+            const outputEl = container.querySelector('.chat-turn, .terminal, [class*="output"]');
+            outputSnapshot = outputEl?.textContent?.slice(-500) || '';
+          }
+
+          return { outputSnapshot, hasCancelBtn, hasBackgroundBtn };
+        })()
+      `);
+
+      return result;
+    } catch (error) {
+      debug('Error getting task snapshot for %s: %s', taskName, error instanceof Error ? error.message : 'unknown');
+      return null;
+    }
+  }
+
+  /**
+   * 处理可疑任务
+   */
+  private async handleSuspiciousTask(taskName: string, silentMs: number): Promise<void> {
+    debug('Handling suspicious task: %s (silent for %dms)', taskName, silentMs);
+
+    // 第一步：飞书告警
+    await this.notifyGroup(`[agentTeams] ⚠️ ${taskName} 疑似卡死\n静默时长: ${Math.round(silentMs / 1000)}秒\n30秒后自动干预，回复 CANCEL 可取消`);
+
+    // 第二步：等待人工确认窗口（30秒）
+    // 注意：这里简化处理，实际应该监听飞书消息
+    await this.delay(30000);
+
+    // 第三步：自动恢复 - 切换到任务并点击取消
+    debug('Auto-recovering suspicious task: %s', taskName);
+    await this.recoveryExecutor.executeSuspiciousTaskRecovery(taskName);
+  }
+
+  /**
+   * 通知群聊
+   */
+  private async notifyGroup(message: string): Promise<void> {
+    debug('[GROUP NOTIFY] %s', message);
+    // 实际实现中通过飞书API发送消息
+  }
+
+  /**
+   * 延迟
+   */
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**

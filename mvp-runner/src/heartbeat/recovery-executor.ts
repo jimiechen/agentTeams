@@ -1378,6 +1378,111 @@ export class RecoveryExecutor {
   }
 
   /**
+   * 可疑任务恢复
+   * 切换到任务并尝试恢复
+   */
+  async executeSuspiciousTaskRecovery(taskName: string): Promise<RecoveryResult[]> {
+    debug('Executing suspicious task recovery for: %s', taskName);
+    const results: RecoveryResult[] = [];
+
+    try {
+      // 第一步：切换到该任务
+      const switched = await this.cdp.evaluate<boolean>(`
+        (() => {
+          const items = document.querySelectorAll('.index-module__task-item___zOpfg');
+          for (const item of items) {
+            if (item.textContent?.includes('${taskName}')) {
+              item.click();
+              return true;
+            }
+          }
+          return false;
+        })()
+      `);
+
+      if (!switched) {
+        debug('❌ Failed to switch to task %s', taskName);
+        return [{
+          success: false,
+          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'switch-failed' },
+          attempts: 1,
+          timestamp: Date.now(),
+          duration: 0,
+          error: `Failed to switch to task ${taskName}`,
+        }];
+      }
+
+      debug('✅ Switched to task %s, waiting for UI...', taskName);
+      await this.delay(1000);
+
+      // 第二步：检查当前按钮状态
+      const hasCancelBtn = await this.cdp.evaluate<boolean>(`
+        (() => {
+          const btns = Array.from(document.querySelectorAll('.icd-btn.icd-btn-tertiary'));
+          return btns.some(b => b.textContent?.includes('取消'));
+        })()
+      `);
+
+      if (hasCancelBtn) {
+        // 有取消按钮，点击取消
+        debug('Clicking cancel button for task %s', taskName);
+        const cancelClicked = await this.cdp.evaluate<boolean>(`
+          (() => {
+            const btns = Array.from(document.querySelectorAll('.icd-btn.icd-btn-tertiary'));
+            const cancelBtn = btns.find(b => b.textContent?.includes('取消'));
+            if (cancelBtn) { cancelBtn.click(); return true; }
+            return false;
+          })()
+        `);
+
+        if (cancelClicked) {
+          debug('✅ Cancel button clicked for task %s', taskName);
+          results.push({
+            success: true,
+            action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'cancel-clicked' },
+            attempts: 1,
+            timestamp: Date.now(),
+            duration: 0,
+          });
+        } else {
+          debug('❌ Cancel button not found for task %s', taskName);
+          results.push({
+            success: false,
+            action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'cancel-not-found' },
+            attempts: 1,
+            timestamp: Date.now(),
+            duration: 0,
+            error: 'Cancel button not found after switch',
+          });
+        }
+      } else {
+        // 没有取消按钮，任务可能已完成
+        debug('✅ Task %s has no cancel button, likely completed or idle', taskName);
+        results.push({
+          success: true,
+          action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'task-completed' },
+          attempts: 1,
+          timestamp: Date.now(),
+          duration: 0,
+        });
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      debug('❌ Suspicious task recovery error: %s', errorMsg);
+      results.push({
+        success: false,
+        action: { ...RECOVERY_ACTIONS.reportToGroup, id: 'recovery-error' },
+        attempts: 1,
+        timestamp: Date.now(),
+        duration: 0,
+        error: errorMsg,
+      });
+    }
+
+    return results;
+  }
+
+  /**
    * 报告到群聊（预留接口）
    */
   private reportToGroup(message: string): void {
