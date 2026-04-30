@@ -1334,7 +1334,7 @@ export class RecoveryExecutor {
             hash = ((hash << 5) - hash) + char;
             hash = hash & hash;
           }
-          return \`${term.scrollHeight}-\${tail.length}-\${hash}\`;
+          return term.scrollHeight + '-' + tail.length + '-' + hash;
         })()
       `);
     } catch {
