@@ -136,7 +136,26 @@ export async function waitResponse(cdp: CDPClient, opts?: WaitResponseOptions): 
       }
     }
 
-    // ========== 优先级2: 检测任务完成 ==========
+    // ========== 优先级2: 检测所有任务状态（新增）==========
+    if (snap.allTasks && snap.allTasks.length > 0) {
+      const inProgressTasks = snap.allTasks.filter(t => t.status === 'running');
+      const interruptedTasks = snap.allTasks.filter(t => t.status === 'interrupted');
+      
+      if (inProgressTasks.length > 0) {
+        debug('All tasks status: %s', snap.allTasks.map(t => `${t.name}(${t.status}${t.isSelected ? ',selected' : ''})`).join(', '));
+      }
+      
+      // 如果有中断的任务，立即报告
+      if (interruptedTasks.length > 0) {
+        debug('⚠️ Interrupted tasks detected: %s', interruptedTasks.map(t => t.name).join(', '));
+        opts?.logger?.warn('Interrupted tasks detected', { 
+          tasks: interruptedTasks.map(t => t.name),
+          allTasks: snap.allTasks.map(t => ({ name: t.name, status: t.status, isSelected: t.isSelected }))
+        });
+      }
+    }
+
+    // ========== 优先级3: 检测任务完成 ==========
     if (isTaskCompleted(snapshots)) {
       const elapsed = Date.now() - startTime;
       debug(`Task completed after ${elapsed}ms (checked ${checkCount} times)`);

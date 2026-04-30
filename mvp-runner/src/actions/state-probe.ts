@@ -6,6 +6,13 @@ import { CDPClient } from '../cdp/client.js';
 
 const debug = createDebug('mvp:probe');
 
+export interface TaskSnapshot {
+  name: string;
+  status: 'completed' | 'interrupted' | 'running' | 'unknown';
+  isSelected: boolean;
+  text: string;
+}
+
 export interface SystemSnapshot {
   // 信号1：按钮态（决定AI是否在生成）
   btnIcon: string;
@@ -24,9 +31,12 @@ export interface SystemSnapshot {
   hasDeleteCard: boolean;
   hasOverwriteCard: boolean;
 
-  // 信号5：侧边栏任务状态
+  // 信号5：侧边栏任务状态（当前选中任务）
   taskStatus: 'completed' | 'interrupted' | 'running' | 'unknown';
   taskText: string;
+
+  // 信号6：所有任务状态（新增）
+  allTasks: TaskSnapshot[];
 
   // 元数据
   timestamp: number;
@@ -82,20 +92,38 @@ export async function captureSnapshot(cdp: CDPClient): Promise<SystemSnapshot> {
       const hasDeleteCard = !!document.querySelector('.icd-delete-files-command-card-v2-actions-delete');
       const hasOverwriteCard = !!document.querySelector('.icd-overwrite-files-command-card-v2-actions-overwrite');
 
-      // 信号5：侧边栏任务状态
+      // 信号5：侧边栏任务状态（当前选中任务）
       const taskItems = document.querySelectorAll('.index-module__task-item___zOpfg');
       let taskStatus = 'unknown';
       let taskText = '';
+      const allTasks = [];
+      
       for (const item of taskItems) {
         const text = item.textContent || '';
         const isSelected = item.className.includes('selected') || 
                           item.classList.contains('selected');
+        
+        // 识别任务名称和状态
+        let name = 'unknown';
+        if (text.includes('PMCLI')) name = 'PMCLI';
+        else if (text.includes('DEVCLI')) name = 'DEVCLI';
+        else if (text.includes('WikiBot')) name = 'WikiBot';
+        
+        let status = 'unknown';
+        if (text.includes('完成')) status = 'completed';
+        else if (text.includes('中断')) status = 'interrupted';
+        else if (text.includes('进行中')) status = 'running';
+        
+        allTasks.push({
+          name,
+          status,
+          isSelected,
+          text: text.slice(0, 50)
+        });
+        
         if (isSelected) {
           taskText = text.slice(0, 50);
-          if (text.includes('完成')) taskStatus = 'completed';
-          else if (text.includes('中断')) taskStatus = 'interrupted';
-          else if (text.includes('进行中')) taskStatus = 'running';
-          break;
+          taskStatus = status;
         }
       }
 
@@ -110,6 +138,7 @@ export async function captureSnapshot(cdp: CDPClient): Promise<SystemSnapshot> {
         hasOverwriteCard,
         taskStatus,
         taskText,
+        allTasks,
         timestamp: Date.now(),
       };
     })()
