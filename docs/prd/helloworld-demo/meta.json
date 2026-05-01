@@ -1,0 +1,16 @@
+{
+  "prd_id": "PRD-DEMO-001",
+  "title": "HelloWorld 函数演示",
+  "version": "1.1",
+  "target_users": ["DEVCLI", "TESTCLI"],
+  "core_value": "验证多 CLI 协作闭环：任务分发 → 代码实现 → 缺陷发现 → 总结汇报",
+  "core_constraints": [
+    "DEVCLI 必须故意制造 1 个可被测试框架自动检测的缺陷",
+    "TESTCLI 必须独立发现该缺陷，不能被提示",
+    "每个阶段完成后必须发送飞书通知",
+    "全程不依赖对话历史，只通过文件交接"
+  ],
+  "chapters": 4,
+  "demo_mode": true,
+  "estimated_duration_minutes": 20
+}

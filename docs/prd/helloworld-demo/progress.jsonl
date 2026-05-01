@@ -1,0 +1,9 @@
+{"ts":"2026-04-30T10:00:00Z","event":"prd_started","prd_id":"PRD-DEMO-001","cli":"PMCLI","version":"1.1"}
+{"ts":"2026-04-30T10:03:00Z","event":"chapter_completed","chapter":1,"cli":"PMCLI","handoff_to":"DEVCLI","lark_notified":true}
+{"ts":"2026-04-30T10:03:05Z","event":"handoff_accepted","from":1,"to":2,"cli":"DEVCLI"}
+{"ts":"2026-04-30T10:08:00Z","event":"chapter_completed","chapter":2,"cli":"DEVCLI","handoff_to":"TESTCLI","defects_planted":1,"lark_notified":true}
+{"ts":"2026-04-30T10:08:05Z","event":"handoff_accepted","from":2,"to":3,"cli":"TESTCLI"}
+{"ts":"2026-04-30T10:12:00Z","event":"chapter_completed","chapter":3,"cli":"TESTCLI","handoff_to":"PMCLI","bugs_found":1,"ac_passed":3,"ac_failed":2,"lark_notified":true}
+{"ts":"2026-04-30T10:12:05Z","event":"handoff_accepted","from":3,"to":4,"cli":"PMCLI"}
+{"ts":"2026-04-30T10:15:00Z","event":"chapter_completed","chapter":4,"cli":"PMCLI","lark_notified":true}
+{"ts":"2026-04-30T10:15:01Z","event":"prd_merged","output":"final-prd.md","total_chapters":4,"open_bugs":1}
