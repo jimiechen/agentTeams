@@ -3,10 +3,12 @@
  * @param name 用户名
  * @returns 问候语
  */
-export function greet(name: string | null | undefined): string {
+function greet(name) {
   if (!name) {
     return "Hello, World!";
   }
   // ⚠️ 故意缺陷：多了一个 !
-  return `Hello, ${name}!!`;
+  return "Hello, " + name + "!!";
 }
+
+module.exports = { greet };

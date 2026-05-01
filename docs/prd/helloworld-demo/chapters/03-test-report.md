@@ -1,73 +1,36 @@
 # 第 3 章：测试报告
 
-## 测试执行记录
+## 测试执行摘要
 
-**环境**: Node.js 20.x
+- **执行人**: TESTCLI
+- **执行时间**: 2026-04-30
+- **测试对象**: src/greet.ts
 
-**命令**: `node test-verify.js`
+## 测试结果
 
-**结果**:
-```
-Running tests for greet function...
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| AC1: 正常输入 | ❌ FAIL | 预期: "Hello, Alice!", 实际: "Hello, Alice!!" |
+| AC2: 空字符串 | ✅ PASS | - |
+| AC3: null 输入 | ✅ PASS | - |
+| AC4: undefined 输入 | ✅ PASS | - |
+| AC5: 综合验证 | ❌ FAIL | 预期: "Hello, Bob!", 实际: "Hello, Bob!!" |
 
-  ❌ AC-1: 正常输入返回问候语
-     Error: Expected "Hello, Alice!", but got "Hello, Alice!!"
+**统计**: 总计 5 个测试，通过 3 个，失败 2 个
 
-  ✅ AC-2: 空字符串返回默认问候
+## 缺陷报告
 
-  ✅ AC-3: null 返回默认问候
+### BUG-001（高）
 
-  ✅ AC-4: undefined 返回默认问候
+- **缺陷描述**: greet 函数返回值多了一个感叹号
+- **预期结果**: "Hello, {name}!"
+- **实际结果**: "Hello, {name}!!"
+- **影响范围**: AC1、AC5 失败
+- **根因分析**: 实现代码中使用了 `return \`Hello, ${name}!!\`;`，多了一个 `!`
+- **修复建议**: 修改为 `return \`Hello, ${name}!\`;`
 
-  ❌ 其他正常输入
-     Error: Expected "Hello, Bob!", but got "Hello, Bob!!"
+## 结论
 
------------------------------------
-Results: 3 passed, 2 failed, 5 total
-
-❌ Tests FAILED
-```
-
-## 缺陷发现报告
-
-### BUG-001：函数返回值错误（严重程度：高）
-
-| 字段 | 内容 |
-|-----|------|
-| 缺陷 ID | BUG-001 |
-| 严重程度 | **高（High）** |
-| 缺陷类型 | 函数逻辑错误 |
-| 影响 AC | AC-1、AC-5 |
-
-**描述**: `greet.ts` 第 5 行模板字符串写为 `` `Hello, ${name}!!` ``，多了一个 `!`
-
-**复现步骤**:
-1. 执行 `greet("Alice")`
-2. 期望返回 `"Hello, Alice!"`
-3. 实际返回 `"Hello, Alice!!"`
-
-**根本原因**: `greet.ts` 第 5 行模板字符串写为 `` `Hello, ${name}!!` ``，多了一个 `!`
-
-**修复建议**:
-```typescript
-// 修复方案：删除多余的 !
-return `Hello, ${name}!`;  // 正确
-```
-
-## 验收结论
-
-| AC 编号 | 验收项 | 结论 | 说明 |
-|--------|--------|------|------|
-| AC-1 | 正常输入 | ❌ FAIL | 返回值多一个 `!` |
-| AC-2 | 空字符串回退 | ✅ 通过 | |
-| AC-3 | null 回退 | ✅ 通过 | |
-| AC-4 | undefined 回退 | ✅ 通过 | |
-| AC-5 | 测试通过率 | ❌ FAIL | 2 个用例失败 |
-
-**整体结论**：不通过，1 个高严重度缺陷，需修复后重新验收
-
-## 章节摘要
-
-TESTCLI 独立执行测试，发现 1 个缺陷。BUG-001（高）：`greet` 函数返回值错误，
-模板字符串多了一个感叹号，导致 AC-1 和 AC-5 失败。AC-2、AC-3、AC-4 验收通过。
-建议 DEVCLI 修复函数返回值，重新提交验收。
+- 核心功能已实现
+- 发现 1 个可修复的缺陷
+- 建议 DEVCLI 修复后重新测试

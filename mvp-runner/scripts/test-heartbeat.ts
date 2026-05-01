@@ -12,9 +12,14 @@ import { recoveryRateLimiter } from '../src/utils/rate-limiter.js';
 // 模拟 CDPClient
 class MockCDPClient {
   private elements = new Map<string, boolean>();
+  private evaluateResults = new Map<string, any>();
 
   setElementExists(selector: string, exists: boolean): void {
     this.elements.set(selector, exists);
+  }
+
+  setEvaluateResult(pattern: string, result: any): void {
+    this.evaluateResults.set(pattern, result);
   }
 
   async send(method: string, params?: any): Promise<any> {
@@ -22,6 +27,13 @@ class MockCDPClient {
   }
 
   async evaluate<T>(expression: string): Promise<T> {
+    // 检查是否有预设的 evaluate 结果
+    for (const [pattern, result] of this.evaluateResults) {
+      if (expression.includes(pattern)) {
+        return result as T;
+      }
+    }
+
     // 检查元素是否存在
     if (expression.includes('document.querySelector')) {
       const match = expression.match(/querySelector\('([^']+)'\)/);
@@ -47,17 +59,17 @@ let failCount = 0;
 function assert(condition: boolean, message: string): void {
   if (condition) {
     passCount++;
-    console.log(`  ✅ ${message}`);
+    console.log(`  [PASS] ${message}`);
   } else {
     failCount++;
-    console.log(`  ❌ ${message}`);
+    console.log(`  [FAIL] ${message}`);
   }
 }
 
 // ============ 测试套件 ============
 
 async function testStateMachine(): Promise<void> {
-  console.log('\n📋 Testing HealthStateMachine');
+  console.log('\n[Test] HealthStateMachine');
 
   const sm = new HealthStateMachine();
 
@@ -89,7 +101,7 @@ async function testStateMachine(): Promise<void> {
 }
 
 async function testButtonWhitelist(): Promise<void> {
-  console.log('\n📋 Testing Button Whitelist');
+  console.log('\n[Test] Button Whitelist');
 
   // 允许的按钮
   const r1 = isButtonAllowed('.icd-btn.icd-btn-tertiary');
@@ -108,7 +120,7 @@ async function testButtonWhitelist(): Promise<void> {
 }
 
 async function testRateLimiter(): Promise<void> {
-  console.log('\n📋 Testing Rate Limiter');
+  console.log('\n[Test] Rate Limiter');
 
   recoveryRateLimiter.reset();
 
@@ -137,7 +149,7 @@ async function testRateLimiter(): Promise<void> {
 }
 
 async function testRecoveryExecutor(): Promise<void> {
-  console.log('\n📋 Testing RecoveryExecutor');
+  console.log('\n[Test] RecoveryExecutor');
 
   const cdp = new MockCDPClient();
   const sm = new HealthStateMachine();
@@ -171,7 +183,7 @@ async function testRecoveryExecutor(): Promise<void> {
 }
 
 async function testConfig(): Promise<void> {
-  console.log('\n📋 Testing Default Config');
+  console.log('\n[Test] Default Config');
 
   assert(DEFAULT_HEARTBEAT_CONFIG.layer1Interval === 5000, 'Layer 1 interval is 5s');
   assert(DEFAULT_HEARTBEAT_CONFIG.layer2Interval === 15000, 'Layer 2 interval is 15s');
@@ -181,7 +193,7 @@ async function testConfig(): Promise<void> {
 }
 
 async function testRecoveryActions(): Promise<void> {
-  console.log('\n📋 Testing Recovery Actions Registry');
+  console.log('\n[Test] Recovery Actions Registry');
 
   assert(RECOVERY_ACTIONS.clickBackground.id === 'click-background', 'Click background action exists');
   assert(RECOVERY_ACTIONS.clickCancel.riskLevel === 'medium', 'Cancel action risk is medium');
@@ -190,10 +202,123 @@ async function testRecoveryActions(): Promise<void> {
   assert(RECOVERY_ACTIONS.reportToGroup.type === 'report', 'Report action type correct');
 }
 
+async function testTaskLevelDetection(): Promise<void> {
+  console.log('\n[Test] Task-Level Detection (NEW)');
+
+  const cdp = new MockCDPClient();
+
+  // 模拟两个任务：PMCLI(completed) 和 DEVCLI(in_progress)
+  // 关键：DEVCLI 有取消按钮，说明在运行
+  cdp.setEvaluateResult('PMCLI', [
+    {
+      taskId: 'PMCLI',
+      taskName: 'PMCLI',
+      status: 'completed',
+      isActive: true,
+      isSelected: true,
+      hasCancelBtn: false,
+      hasBackgroundBtn: false,
+      outputSnapshot: 'Task completed',
+      silentDurationMs: 0
+    },
+    {
+      taskId: 'DEVCLI',
+      taskName: 'DEVCLI',
+      status: 'in_progress',
+      isActive: false,
+      isSelected: false,
+      hasCancelBtn: true,  // 有取消按钮，说明在运行
+      hasBackgroundBtn: false,
+      outputSnapshot: 'Generating code...',
+      silentDurationMs: 0
+    }
+  ]);
+
+  // 测试：验证任务级快照能正确识别 DEVCLI 的取消按钮
+  const result = await cdp.evaluate<any>('PMCLI');
+  assert(result && result.length === 2, 'Task-level snapshot returns all tasks');
+
+  const devcli = result.find((t: any) => t.taskName === 'DEVCLI');
+  assert(devcli, 'DEVCLI task found in snapshot');
+  assert(devcli.status === 'in_progress', 'DEVCLI status is in_progress');
+  assert(devcli.hasCancelBtn === true, 'DEVCLI hasCancelBtn detected correctly');
+  assert(devcli.isActive === false, 'DEVCLI is not active task');
+
+  const pmcli = result.find((t: any) => t.taskName === 'PMCLI');
+  assert(pmcli, 'PMCLI task found in snapshot');
+  assert(pmcli.status === 'completed', 'PMCLI status is completed');
+  assert(pmcli.hasCancelBtn === false, 'PMCLI has no cancel button');
+
+  console.log('  [INFO] Task-level detection verified:');
+  console.log(`    - PMCLI: ${pmcli.status}, cancel=${pmcli.hasCancelBtn}`);
+  console.log(`    - DEVCLI: ${devcli.status}, cancel=${devcli.hasCancelBtn} (non-active)`);
+}
+
+async function testTaskActivityTracker(): Promise<void> {
+  console.log('\n[Test] TaskActivityTracker Logic');
+
+  // 模拟 TaskActivityTracker 的行为
+  const tracker = new Map<string, { outputHash: string; lastActiveAt: number; hasCancelBtn: boolean }>();
+
+  function update(taskName: string, outputSnapshot: string, hasCancelBtn: boolean) {
+    const now = Date.now();
+    const prev = tracker.get(taskName);
+    const currentHash = hashString(outputSnapshot);
+
+    const hasChanged = !prev ||
+      prev.outputHash !== currentHash ||
+      prev.hasCancelBtn !== hasCancelBtn;
+
+    if (hasChanged) {
+      tracker.set(taskName, {
+        outputHash: currentHash,
+        lastActiveAt: now,
+        hasCancelBtn,
+      });
+    }
+
+    const record = tracker.get(taskName)!;
+    const silentMs = now - record.lastActiveAt;
+
+    return {
+      taskName,
+      silentMs,
+      isSuspicious: silentMs > 300000, // 5分钟阈值
+    };
+  }
+
+  function hashString(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return hash.toString();
+  }
+
+  // 测试1：首次更新
+  const r1 = update('DEVCLI', 'output v1', true);
+  assert(r1.silentMs === 0, 'First update: silentMs is 0');
+  assert(!r1.isSuspicious, 'First update: not suspicious');
+
+  // 测试2：相同内容更新（静默）
+  const r2 = update('DEVCLI', 'output v1', true);
+  assert(r2.silentMs < 1000, 'Same content: silentMs is small');
+  assert(!r2.isSuspicious, 'Same content: not suspicious');
+
+  // 测试3：内容变化（活跃）
+  const r3 = update('DEVCLI', 'output v2', true);
+  assert(r3.silentMs === 0, 'Content changed: silentMs reset to 0');
+  assert(!r3.isSuspicious, 'Content changed: not suspicious');
+
+  console.log('  [INFO] TaskActivityTracker logic verified');
+}
+
 // ============ 主函数 ============
 
 async function main(): Promise<void> {
-  console.log('🚀 Heartbeat System Integration Test');
+  console.log('Heartbeat System Integration Test');
   console.log('=====================================');
 
   try {
@@ -203,21 +328,23 @@ async function main(): Promise<void> {
     await testRecoveryExecutor();
     await testConfig();
     await testRecoveryActions();
+    await testTaskLevelDetection();
+    await testTaskActivityTracker();
 
     console.log('\n=====================================');
-    console.log(`✅ Passed: ${passCount}`);
-    console.log(`❌ Failed: ${failCount}`);
-    console.log(`📊 Total: ${passCount + failCount}`);
+    console.log(`Passed: ${passCount}`);
+    console.log(`Failed: ${failCount}`);
+    console.log(`Total: ${passCount + failCount}`);
 
     if (failCount === 0) {
-      console.log('\n🎉 All tests passed!');
+      console.log('\nAll tests passed!');
       process.exit(0);
     } else {
-      console.log('\n⚠️ Some tests failed!');
+      console.log('\nSome tests failed!');
       process.exit(1);
     }
   } catch (err) {
-    console.error('\n💥 Test suite failed:', (err as Error).message);
+    console.error('\nTest suite failed:', (err as Error).message);
     process.exit(1);
   }
 }

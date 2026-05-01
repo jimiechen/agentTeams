@@ -1,5 +1,5 @@
-// 测试验证脚本
-const { greet } = require('./greet.js');
+// 测试验证脚本 - 不依赖外部测试框架
+import { greet } from './greet.ts';
 
 const tests = [
   { name: 'AC1: 正常输入', input: 'Alice', expected: 'Hello, Alice!' },

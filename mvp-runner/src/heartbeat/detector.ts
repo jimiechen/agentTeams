@@ -205,26 +205,37 @@ export class HeartbeatDetector {
    * 检查每个任务的活动状态
    * 基于 TaskActivityTracker 维护每个任务的静默时长
    */
+  private suspiciousTaskCooldown = new Map<string, number>();
+  private readonly SUSPICIOUS_COOLDOWN_MS = 120000; // 2分钟冷却时间
+
   private async checkTaskActivity(tasks: Array<{ name: string; status: string; isActive: boolean }>): Promise<void> {
     for (const task of tasks) {
-      if (task.status === 'in_progress') {
-        // 获取该任务的输出快照（需要从 DOM 中查询）
-        const taskSnapshot = await this.getTaskSnapshot(task.name);
-        if (taskSnapshot) {
-          const activity = this.taskActivityTracker.update(
-            task.name,
-            taskSnapshot.outputSnapshot,
-            taskSnapshot.hasCancelBtn,
-            taskSnapshot.hasBackgroundBtn
-          );
+      // 获取该任务的输出快照（无论状态如何，都需要更新 tracker）
+      const taskSnapshot = await this.getTaskSnapshot(task.name);
+      if (taskSnapshot) {
+        const activity = this.taskActivityTracker.update(
+          task.name,
+          taskSnapshot.outputSnapshot,
+          taskSnapshot.hasCancelBtn,
+          taskSnapshot.hasBackgroundBtn
+        );
 
-          if (activity.isSuspicious) {
-            debug('🚨 Task %s is suspicious: silent for %dms', task.name, activity.silentMs);
-            // 触发可疑任务处理
-            await this.handleSuspiciousTask(task.name, activity.silentMs);
-          } else {
-            debug('✅ Task %s active: silent for %dms', task.name, activity.silentMs);
+        // 只有 in_progress 任务才触发可疑检测
+        if (task.status === 'in_progress' && activity.isSuspicious) {
+          // 检查 cooldown
+          const lastTriggered = this.suspiciousTaskCooldown.get(task.name);
+          const now = Date.now();
+          if (lastTriggered && (now - lastTriggered) < this.SUSPICIOUS_COOLDOWN_MS) {
+            debug('⏳ Task %s suspicious but in cooldown (%dms left)', task.name, this.SUSPICIOUS_COOLDOWN_MS - (now - lastTriggered));
+            continue;
           }
+
+          debug('🚨 Task %s is suspicious: silent for %dms', task.name, activity.silentMs);
+          this.suspiciousTaskCooldown.set(task.name, now);
+          // 触发可疑任务处理
+          await this.handleSuspiciousTask(task.name, activity.silentMs);
+        } else {
+          debug('✅ Task %s active: silent for %dms, status=%s', task.name, activity.silentMs, task.status);
         }
       }
     }
@@ -264,14 +275,22 @@ export class HeartbeatDetector {
           let outputSnapshot = '';
 
           if (container) {
-            const cancelBtn = container.querySelector('button[aria-label*="取消"], .icd-btn.icd-btn-tertiary');
-            const bgBtn = container.querySelector('button[aria-label*="后台"], .icd-btn.icd-btn-tertiary');
-
-            if (cancelBtn) {
-              hasCancelBtn = (cancelBtn.textContent || '').includes('取消');
+            // 精确匹配取消按钮：必须包含"取消"文本
+            const allBtns = container.querySelectorAll('button, .icd-btn.icd-btn-tertiary');
+            for (const btn of allBtns) {
+              const text = btn.textContent || '';
+              if (text.includes('取消')) hasCancelBtn = true;
+              if (text.includes('后台')) hasBackgroundBtn = true;
             }
-            if (bgBtn) {
-              hasBackgroundBtn = (bgBtn.textContent || '').includes('后台');
+
+            // 如果没有在容器内找到，尝试全局查找（当前活动任务）
+            if (!hasCancelBtn && !hasBackgroundBtn) {
+              const globalBtns = document.querySelectorAll('.icd-btn.icd-btn-tertiary');
+              for (const btn of globalBtns) {
+                const text = btn.textContent || '';
+                if (text.includes('取消')) hasCancelBtn = true;
+                if (text.includes('后台')) hasBackgroundBtn = true;
+              }
             }
 
             const outputEl = container.querySelector('.chat-turn, .terminal, [class*="output"]');
@@ -295,16 +314,21 @@ export class HeartbeatDetector {
   private async handleSuspiciousTask(taskName: string, silentMs: number): Promise<void> {
     debug('Handling suspicious task: %s (silent for %dms)', taskName, silentMs);
 
-    // 第一步：飞书告警
-    await this.notifyGroup(`[agentTeams] ⚠️ ${taskName} 疑似卡死\n静默时长: ${Math.round(silentMs / 1000)}秒\n30秒后自动干预，回复 CANCEL 可取消`);
+    // 第一步：飞书告警（只告警，不阻塞）
+    this.notifyGroup(`[agentTeams] ⚠️ ${taskName} 疑似卡死\n静默时长: ${Math.round(silentMs / 1000)}秒\n将自动尝试恢复`);
 
-    // 第二步：等待人工确认窗口（30秒）
-    // 注意：这里简化处理，实际应该监听飞书消息
-    await this.delay(30000);
-
-    // 第三步：自动恢复 - 切换到任务并点击取消
+    // 第二步：立即尝试恢复（不等待人工确认，避免阻塞）
     debug('Auto-recovering suspicious task: %s', taskName);
-    await this.recoveryExecutor.executeSuspiciousTaskRecovery(taskName);
+    const results = await this.recoveryExecutor.executeSuspiciousTaskRecovery(taskName);
+
+    // 记录恢复结果
+    for (const result of results) {
+      if (result.success) {
+        debug('✅ Recovery succeeded for %s: %s', taskName, result.action.id);
+      } else {
+        debug('❌ Recovery failed for %s: %s', taskName, result.error);
+      }
+    }
   }
 
   /**

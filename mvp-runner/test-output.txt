@@ -1,0 +1,83 @@
+﻿Heartbeat System Integration Test
+=====================================
+
+[Test] HealthStateMachine
+  [PASS] Initial state is normal
+  [PASS] normal -> frozen (frozen-signal)
+  [PASS] frozen -> normal (recovery-success)
+  [PASS] Invalid transition rejected
+  [PASS] Transition history recorded
+  [PASS] Can transition to frozen from normal
+  [PASS] Cannot manual-restart from normal
+  [PASS] State reset to normal
+  [PASS] History cleared after reset
+
+[Test] Button Whitelist
+  [PASS] Background button is allowed
+  [PASS] Background button risk is medium
+  [PASS] Unknown button is rejected
+  [PASS] Rejection reason provided
+  [PASS] Delete button is allowed
+  [PASS] Delete button risk is high
+
+[Test] Rate Limiter
+  [PASS] First operation allowed
+  [PASS] Remaining count correct (3 left)
+  [PASS] Remaining after one operation (2 left)
+  [PASS] Operation blocked when limit exceeded
+  [PASS] Rate limit reason provided
+  [PASS] Stats count correct
+
+[Test] RecoveryExecutor
+  [PASS] Low-risk action executed successfully
+  [PASS] Low-risk action succeeded on first attempt
+  [PASS] Action fails when element not found
+  [PASS] High-risk action blocked without confirmation
+  [PASS] High-risk rejection reason correct
+  [PASS] Audit log recorded all actions
+  [PASS] Audit log operator is auto
+  [PASS] Audit log has session ID
+  [PASS] Recovery history recorded (at least 2 attempts)
+
+[Test] Default Config
+  [PASS] Layer 1 interval is 5s
+  [PASS] Layer 2 interval is 15s
+  [PASS] Layer 3 interval is 30s
+  [PASS] Confidence threshold is 0.7
+  [PASS] Signal buffer size is 100
+
+[Test] Recovery Actions Registry
+  [PASS] Click background action exists
+  [PASS] Cancel action risk is medium
+  [PASS] Delete confirm requires confirmation
+  [PASS] Retain delete risk is low
+  [PASS] Report action type correct
+
+[Test] Task-Level Detection (NEW)
+  [PASS] Task-level snapshot returns all tasks
+  [PASS] DEVCLI task found in snapshot
+  [PASS] DEVCLI status is in_progress
+  [PASS] DEVCLI hasCancelBtn detected correctly
+  [PASS] DEVCLI is not active task
+  [PASS] PMCLI task found in snapshot
+  [PASS] PMCLI status is completed
+  [PASS] PMCLI has no cancel button
+  [INFO] Task-level detection verified:
+    - PMCLI: completed, cancel=false
+    - DEVCLI: in_progress, cancel=true (non-active)
+
+[Test] TaskActivityTracker Logic
+  [PASS] First update: silentMs is 0
+  [PASS] First update: not suspicious
+  [PASS] Same content: silentMs is small
+  [PASS] Same content: not suspicious
+  [PASS] Content changed: silentMs reset to 0
+  [PASS] Content changed: not suspicious
+  [INFO] TaskActivityTracker logic verified
+
+=====================================
+Passed: 54
+Failed: 0
+Total: 54
+
+All tests passed!

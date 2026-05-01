@@ -1,23 +1,26 @@
 import { greet } from './greet';
 
-describe('greet function', () => {
-  test('AC-1: 正常输入返回问候语', () => {
-    expect(greet("Alice")).toBe("Hello, Alice!");  // ⬅ 会 FAIL
+describe('greet', () => {
+  test('AC1: 正常输入返回正确问候语', () => {
+    expect(greet('Alice')).toBe('Hello, Alice!');
   });
 
-  test('AC-2: 空字符串返回默认问候', () => {
-    expect(greet("")).toBe("Hello, World!");
+  test('AC2: 空字符串返回默认问候语', () => {
+    expect(greet('')).toBe('Hello, World!');
   });
 
-  test('AC-3: null 返回默认问候', () => {
-    expect(greet(null as any)).toBe("Hello, World!");
+  test('AC3: null 输入返回默认问候语', () => {
+    expect(greet(null)).toBe('Hello, World!');
   });
 
-  test('AC-4: undefined 返回默认问候', () => {
-    expect(greet(undefined as any)).toBe("Hello, World!");
+  test('AC4: undefined 输入返回默认问候语', () => {
+    expect(greet(undefined)).toBe('Hello, World!');
   });
 
-  test('其他正常输入', () => {
-    expect(greet("Bob")).toBe("Hello, Bob!");  // ⬅ 会 FAIL
+  test('AC5: 所有测试用例通过', () => {
+    // 综合验证
+    expect(greet('Bob')).toBe('Hello, Bob!');
+    expect(greet('')).toBe('Hello, World!');
+    expect(greet(null)).toBe('Hello, World!');
   });
 });
