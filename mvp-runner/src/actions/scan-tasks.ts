@@ -31,6 +31,7 @@ export async function scanTasks(cdp: CDPClient): Promise<TaskInfo[]> {
         let name = 'unknown';
         if (text.includes('PMCLI')) name = 'PMCLI';
         else if (text.includes('DEVCLI')) name = 'DEVCLI';
+        else if (text.includes('TESTCLI')) name = 'TESTCLI';
         
         // 识别状态
         let status = 'unknown';

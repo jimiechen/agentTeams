@@ -165,6 +165,7 @@ export class Layer1Collector {
             let name = 'unknown';
             if (text.includes('PMCLI')) name = 'PMCLI';
             else if (text.includes('DEVCLI')) name = 'DEVCLI';
+            else if (text.includes('TESTCLI')) name = 'TESTCLI';
             else if (text.includes('WikiBot')) name = 'WikiBot';
             
             // 识别状态
