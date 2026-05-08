@@ -8,7 +8,7 @@ function greet(name) {
     return "Hello, World!";
   }
   // ⚠️ 故意缺陷：多了一个 !
-  return "Hello, " + name + "!!";
+  return "Hello, " + name + "!";
 }
 
 module.exports = { greet };

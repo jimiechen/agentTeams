@@ -1,5 +1,5 @@
 import debug from 'debug';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import type { CDPClient } from './cdp/client.js';
 
@@ -18,6 +18,9 @@ import { WorkspaceLogger, loggerManager } from './utils/workspace-logger.js';
 import { injectWikiContext } from './skills/wiki-inject.js';
 import { HeartbeatDetector } from './heartbeat/index.js';
 import type { HeartbeatMode } from './heartbeat/index.js';
+import { formatResponseToMarkdown, extractSummary } from './markdown-formatter.js';
+import { LarkDocUploader } from './lark-doc-uploader.js';
+import lark from '@larksuiteoapi/node-sdk';
 
 const log = debug('mvp:runner-multi');
 
@@ -25,6 +28,7 @@ export class MultiTaskRunner {
   private runsDir: string;
   private loggers = new Map<string, WorkspaceLogger>();
   private heartbeatDetector?: HeartbeatDetector;
+  private docUploader?: LarkDocUploader;
 
   constructor(
     private cfg: AppConfig,
@@ -40,6 +44,9 @@ export class MultiTaskRunner {
 
     // 初始化心跳检测器
     this.initHeartbeatDetector();
+
+    // 初始化飞书文档上传器（如果配置允许）
+    this.initDocUploader();
   }
 
   /** 初始化所有工作空间的logger */
@@ -84,6 +91,40 @@ export class MultiTaskRunner {
       log('Heartbeat detector initialized');
     } catch (err) {
       log('Failed to initialize heartbeat detector: %s', (err as Error).message);
+    }
+  }
+
+  /** 初始化飞书文档上传器 */
+  private initDocUploader(): void {
+    const replyMode = (this.cfg as any).lark?.reply_mode || 'post';
+    const rootFolderToken = (this.cfg as any).lark?.root_folder_token;
+    const uploadEnabled = (this.cfg as any).lark?.upload_enabled ?? false;
+
+    // hybrid/card 模式且配置了 root_folder_token 才初始化
+    if ((replyMode === 'card' || replyMode === 'hybrid') && rootFolderToken && uploadEnabled) {
+      try {
+        // 使用第一个 bot 的 client 创建 uploader
+        const firstBot = this.bots[0];
+        if (firstBot) {
+          // 注意：这里需要访问 bot 内部的 client，实际实现可能需要调整
+          // 为简化，我们创建一个新的 client
+          const client = new lark.Client({
+            appId: this.cfg.lark.appId,
+            appSecret: this.cfg.lark.appSecret,
+            appType: lark.AppType.SelfBuild,
+          });
+          this.docUploader = new LarkDocUploader(
+            client,
+            rootFolderToken,
+            { concurrency: (this.cfg as any).lark?.upload_concurrency || 3 }
+          );
+          log('DocUploader initialized (reply_mode=%s)', replyMode);
+        }
+      } catch (err) {
+        log('Failed to init DocUploader: %s', (err as Error).message);
+      }
+    } else {
+      log('DocUploader skipped (reply_mode=%s, upload_enabled=%s)', replyMode, uploadEnabled);
     }
   }
 
@@ -309,31 +350,76 @@ export class MultiTaskRunner {
           });
         }
 
-        // 同时保存到runs目录
+        // 同时保存到runs目录（新结构：runs/{runId}/response.md）
+        const runDir = path.join(this.runsDir, runId);
+        mkdirSync(runDir, { recursive: true });
+        const relativePath = `runs/${runId}/response.md`;
+        const localPath = path.join(runDir, 'response.md');
+
+        // 生成标准 Markdown
+        const markdownContent = formatResponseToMarkdown({
+          runId,
+          taskSlot: targetSlot,
+          taskName: targetTaskName || undefined,
+          senderId: msg.senderId,
+          promptText: parsed.prompt,
+          responseText: response,
+          durationMs: duration,
+          startedAt: new Date(startedAt).toISOString(),
+          finishedAt: new Date().toISOString(),
+        });
+
+        // 写入本地文件
+        writeFileSync(localPath, markdownContent, 'utf-8');
+        writeFileSync(
+          path.join(runDir, 'meta.json'),
+          JSON.stringify({ runId, taskSlot: targetSlot, durationMs: duration, status: 'success' }, null, 2)
+        );
+        writeFileSync(
+          path.join(runDir, 'prompt.md'),
+          `# Prompt\n\n${parsed.prompt}\n`
+        );
+        log('[%s] persisted to %s', runId, localPath);
+
+        // 同时保留旧的 persist 方式（兼容）
         this.persist(runId, parsed, response, duration, msg.senderId, targetTaskName, targetSlot);
 
-        const maxChars = this.cfg.pmbot.response_max_chars;
-        const taskDirName = targetTaskName || 'unknown';
-        const body = response.length > maxChars
-          ? response.slice(0, maxChars) + `\n\n… (truncated, full ${response.length} chars saved to runs/${taskDirName}/${runId}.md)`
-          : response;
+        // 发送结果到群聊（根据 reply_mode 决定）
+        const replyMode = (this.cfg as any).lark?.reply_mode || 'post';
+        log('[%s] reply_mode=%s, sending reply...', runId, replyMode);
 
-        // 发送结果到群聊
-        log('[%s] sending reply to group, length=%d', runId, body.length);
-        try {
-          await this.replyByKeyword(botKeyword, msg.messageId,
-            `🤖 ${taskDisplay} 响应 (${Math.round(duration / 1000)}s)`,
-            body
-          );
-          log('[%s] reply sent successfully', runId);
-        } catch (replyErr) {
-          log('[%s] replyPost failed: %s', runId, (replyErr as Error).message);
+        if ((replyMode === 'card' || replyMode === 'hybrid') && this.docUploader) {
+          // 卡片模式：上传飞书 + 发送卡片
           try {
-            await this.replyByKeyword(botKeyword, msg.messageId, `🤖 ${taskDisplay} 响应:\n${body.slice(0, 1000)}`);
-            log('[%s] fallback reply sent', runId);
-          } catch (fallbackErr) {
-            log('[%s] fallback reply also failed: %s', runId, (fallbackErr as Error).message);
+            const uploadResult = await this.docUploader.uploadMarkdown(localPath, relativePath);
+            log('[%s] uploaded to lark: %s', runId, uploadResult.fileUrl);
+
+            // 发送卡片消息
+            const bot = this.bots.find(b => b.keyword === botKeyword);
+            if (bot) {
+              await bot.sendTaskCompleteCard(msg.messageId, {
+                runId,
+                taskName: targetTaskName || `slot #${targetSlot}`,
+                durationSec: Math.round(duration / 1000),
+                docUrl: uploadResult.fileUrl,
+                relativePath: uploadResult.relativePath,
+                summary: extractSummary(response, 200),
+                status: 'success',
+              });
+              log('[%s] card sent successfully', runId);
+            }
+          } catch (uploadErr) {
+            log('[%s] upload/card failed: %s', runId, (uploadErr as Error).message);
+            if (replyMode === 'card') {
+              // card 模式不允许降级，报错
+              throw uploadErr;
+            }
+            // hybrid 模式降级到 post
+            await this.sendPostReply(botKeyword, msg.messageId, taskDisplay, response, duration, runId, localPath);
           }
+        } else {
+          // post 模式（默认或降级）
+          await this.sendPostReply(botKeyword, msg.messageId, taskDisplay, response, duration, runId, localPath);
         }
 
         log('[%s] done in %dms', runId, duration);
@@ -363,6 +449,36 @@ export class MultiTaskRunner {
       await bot.replyPost(messageId, text, body);
     } else {
       await bot.reply(messageId, text);
+    }
+  }
+
+  /** 发送 post 模式回复（兼容旧模式） */
+  private async sendPostReply(
+    botKeyword: string,
+    messageId: string,
+    taskDisplay: string,
+    response: string,
+    duration: number,
+    runId: string,
+    localPath: string
+  ): Promise<void> {
+    const maxChars = this.cfg.pmbot.response_max_chars;
+    const body = response.length > maxChars
+      ? response.slice(0, maxChars) + `\n\n… (truncated, full ${response.length} chars saved to ${localPath})`
+      : response;
+
+    try {
+      await this.replyByKeyword(botKeyword, messageId,
+        `🤖 ${taskDisplay} 响应 (${Math.round(duration / 1000)}s)`,
+        body
+      );
+    } catch (replyErr) {
+      log('[%s] replyPost failed: %s', runId, (replyErr as Error).message);
+      try {
+        await this.replyByKeyword(botKeyword, messageId, `🤖 ${taskDisplay} 响应:\n${body.slice(0, 1000)}`);
+      } catch (fallbackErr) {
+        log('[%s] fallback reply also failed: %s', runId, (fallbackErr as Error).message);
+      }
     }
   }
 

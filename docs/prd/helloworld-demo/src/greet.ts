@@ -8,5 +8,5 @@ export function greet(name: string | null | undefined): string {
     return "Hello, World!";
   }
   // ⚠️ 故意缺陷：多了一个 !
-  return `Hello, ${name}!!`;
+  return `Hello, ${name}!`;
 }

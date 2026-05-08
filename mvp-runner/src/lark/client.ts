@@ -231,6 +231,90 @@ export class LarkBot {
       await this.sendText(`${title}\n${body}`);
     }
   }
+
+  /**
+   * 发送任务完成卡片消息（interactive）
+   * 包含任务摘要、耗时、状态，以及查看完整报告的按钮
+   */
+  async sendTaskCompleteCard(
+    messageId: string,
+    params: {
+      runId: string;
+      taskName: string;
+      durationSec: number;
+      docUrl: string;
+      relativePath: string;
+      summary: string;
+      status: 'success' | 'failed' | 'timeout';
+    }
+  ): Promise<void> {
+    const statusEmoji = {
+      success: '✅',
+      failed: '❌',
+      timeout: '⏱️',
+    }[params.status];
+
+    const card = {
+      config: { wide_screen_mode: true },
+      header: {
+        title: { tag: 'plain_text', content: `${statusEmoji} 任务完成: ${params.taskName}` },
+        template: params.status === 'success' ? 'green' : 'red',
+      },
+      elements: [
+        {
+          tag: 'div',
+          fields: [
+            { is_short: true, text: { tag: 'lark_md', content: `**Run ID**\n\`${params.runId}\`` } },
+            { is_short: true, text: { tag: 'lark_md', content: `**耗时**\n${params.durationSec}s` } },
+            { is_short: false, text: { tag: 'lark_md', content: `**相对路径**\n\`${params.relativePath}\`` } },
+          ],
+        },
+        { tag: 'hr' },
+        { tag: 'div', text: { tag: 'lark_md', content: `**摘要**\n${params.summary}` } },
+        { tag: 'hr' },
+        {
+          tag: 'action',
+          actions: [
+            {
+              tag: 'button',
+              text: { tag: 'plain_text', content: '📄 查看完整报告' },
+              url: params.docUrl,
+              multi_open_url: {
+                url: params.docUrl,
+                android_url: params.docUrl,
+                ios_url: params.docUrl,
+                pc_url: params.docUrl,
+              },
+              type: 'primary',
+            },
+          ],
+        },
+      ],
+    };
+
+    try {
+      this.logger?.logLarkEvent('send_task_complete_card', { messageId, runId: params.runId });
+      await this.client.im.message.reply({
+        path: { message_id: messageId },
+        data: {
+          msg_type: 'interactive',
+          content: JSON.stringify(card),
+        },
+      });
+    } catch (err) {
+      log('sendTaskCompleteCard failed, fallback to replyPost: %s', (err as Error).message);
+      this.logger?.error('SendTaskCompleteCard failed, fallback to replyPost', {
+        error: (err as Error).message,
+        messageId,
+      });
+      // 降级到 replyPost
+      await this.replyPost(
+        messageId,
+        `${statusEmoji} 任务完成: ${params.taskName} (${params.durationSec}s)`,
+        `${params.summary}\n\n查看完整报告: ${params.docUrl}`
+      );
+    }
+  }
 }
 
 function safeJsonParse<T>(s: string, fallback: T): T {

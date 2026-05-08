@@ -21,6 +21,7 @@
     "chrome-remote-interface": "^0.33.2",
     "debug": "^4.3.4",
     "dotenv": "^16.4.5",
+    "p-queue": "^9.2.0",
     "p-retry": "^6.2.0",
     "yaml": "^2.3.4"
   },

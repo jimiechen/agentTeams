@@ -1,11 +1,16 @@
-{"timestamp":"2026-04-30T00:00:00Z","event":"task_start","cli":"PMCLI","task":"创建目录结构和meta.json","status":"started"}
-{"timestamp":"2026-04-30T00:05:00Z","event":"task_complete","cli":"PMCLI","task":"创建目录结构和meta.json","status":"completed","deliverables":["docs/prd/helloworld-demo/meta.json"]}
-{"timestamp":"2026-04-30T00:06:00Z","event":"task_start","cli":"PMCLI","task":"编写第1章任务规格","status":"started"}
-{"timestamp":"2026-04-30T00:10:00Z","event":"task_complete","cli":"PMCLI","task":"编写第1章任务规格","status":"completed","deliverables":["docs/prd/helloworld-demo/chapters/01-task-spec.md"]}
-{"timestamp":"2026-04-30T00:11:00Z","event":"task_start","cli":"DEVCLI","task":"实现greet函数和第2章","status":"started"}
-{"timestamp":"2026-04-30T00:15:00Z","event":"task_complete","cli":"DEVCLI","task":"实现greet函数和第2章","status":"completed","deliverables":["src/greet.ts","src/greet.test.ts","chapters/02-implementation.md"]}
-{"timestamp":"2026-04-30T00:16:00Z","event":"task_start","cli":"TESTCLI","task":"执行测试和编写第3章","status":"started"}
-{"timestamp":"2026-04-30T00:18:00Z","event":"task_complete","cli":"TESTCLI","task":"执行测试和编写第3章","status":"completed","deliverables":["chapters/03-test-report.md"],"bugs_found":["BUG-001"]}
-{"timestamp":"2026-04-30T00:19:00Z","event":"task_start","cli":"PMCLI","task":"编写第4章总结","status":"started"}
-{"timestamp":"2026-04-30T00:20:00Z","event":"task_complete","cli":"PMCLI","task":"编写第4章总结","status":"completed","deliverables":["chapters/04-summary.md"]}
-{"timestamp":"2026-04-30T00:20:00Z","event":"demo_complete","cli":"ALL","task":"HelloWorld PRD演示","status":"completed","total_duration_minutes":20}
+{"timestamp":"2026-05-01T00:00:00Z","event":"task_start","cli":"PMCLI","task":"创建目录结构和meta.json","status":"started"}
+{"timestamp":"2026-05-01T00:05:00Z","event":"task_complete","cli":"PMCLI","task":"创建目录结构和meta.json","status":"completed","deliverables":["docs/prd/helloworld-demo/meta.json"]}
+{"timestamp":"2026-05-01T00:06:00Z","event":"chapter_completed","cli":"PMCLI","chapter":1,"task":"创建目录结构和meta.json","status":"completed"}
+{"timestamp":"2026-05-01T00:06:00Z","event":"task_start","cli":"PMCLI","task":"编写第1章任务规格","status":"started"}
+{"timestamp":"2026-05-01T00:10:00Z","event":"task_complete","cli":"PMCLI","task":"编写第1章任务规格","status":"completed","deliverables":["docs/prd/helloworld-demo/chapters/01-task-spec.md"]}
+{"timestamp":"2026-05-01T00:10:00Z","event":"chapter_completed","cli":"PMCLI","chapter":1,"task":"编写第1章任务规格","status":"completed"}
+{"timestamp":"2026-05-01T00:11:00Z","event":"task_start","cli":"DEVCLI","task":"实现greet函数和第2章","status":"started"}
+{"timestamp":"2026-05-01T00:15:00Z","event":"task_complete","cli":"DEVCLI","task":"实现greet函数和第2章","status":"completed","deliverables":["src/greet.ts","src/greet.test.ts","chapters/02-implementation.md"]}
+{"timestamp":"2026-05-01T00:15:00Z","event":"chapter_completed","cli":"DEVCLI","chapter":2,"task":"实现greet函数和第2章","status":"completed"}
+{"timestamp":"2026-05-01T00:16:00Z","event":"task_start","cli":"TESTCLI","task":"执行测试和编写第3章","status":"started"}
+{"timestamp":"2026-05-01T00:18:00Z","event":"task_complete","cli":"TESTCLI","task":"执行测试和编写第3章","status":"completed","deliverables":["chapters/03-test-report.md"],"bugs_found":["BUG-001"]}
+{"timestamp":"2026-05-01T00:18:00Z","event":"chapter_completed","cli":"TESTCLI","chapter":3,"task":"执行测试和编写第3章","status":"completed"}
+{"timestamp":"2026-05-01T00:19:00Z","event":"task_start","cli":"PMCLI","task":"编写第4章总结","status":"started"}
+{"timestamp":"2026-05-01T00:20:00Z","event":"task_complete","cli":"PMCLI","task":"编写第4章总结","status":"completed","deliverables":["chapters/04-summary.md"]}
+{"timestamp":"2026-05-01T00:20:00Z","event":"chapter_completed","cli":"PMCLI","chapter":4,"task":"编写第4章总结","status":"completed"}
+{"timestamp":"2026-05-01T00:20:00Z","event":"demo_complete","cli":"ALL","task":"HelloWorld PRD演示","status":"completed","total_duration_minutes":20}
