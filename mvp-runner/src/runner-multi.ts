@@ -350,10 +350,11 @@ export class MultiTaskRunner {
           });
         }
 
-        // 同时保存到runs目录（新结构：runs/{runId}/response.md）
-        const runDir = path.join(this.runsDir, runId);
+        // 同时保存到runs目录（新结构：runs/{workspace}/{runId}/response.md）
+        const workspaceName = matchedWorkspace?.name || 'default';
+        const runDir = path.join(this.runsDir, workspaceName, runId);
         mkdirSync(runDir, { recursive: true });
-        const relativePath = `runs/${runId}/response.md`;
+        const relativePath = `runs/${workspaceName}/${runId}/response.md`;
         const localPath = path.join(runDir, 'response.md');
 
         // 生成标准 Markdown
