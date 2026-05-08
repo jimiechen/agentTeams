@@ -1,0 +1,23 @@
+=== 飞书 API 可用性验证 ===
+时间: 2026-05-08T05:11:13.052Z
+App ID: cli_a9645d1646a31bc9
+Root Folder Token: JwItfxAPxlEyQMdqOnlcsbkWnwC
+
+--- 测试 1: drive.v1.file.list ---
+✅ 列表查询成功
+   文件数量: 0
+
+--- 测试 2: drive.v1.file.create_folder ---
+✅ 文件夹创建成功
+   Token: BJsZf6cRNlxDIjdkyzFclVc4n8b
+   URL: https://feishu.cn/drive/folder/BJsZf6cRNlxDIjdkyzFclVc4n8b
+
+--- 测试 3: drive.v1.file.upload_all ---
+❌ 文件上传失败: 未返回 file_token
+
+=== 验证结果总结 ===
+1. list 接口: ✅ 通过
+2. create_folder 接口: ✅ 通过
+3. upload_all 接口: ❌ 失败
+
+❌ 存在失败 - 需要检查配置

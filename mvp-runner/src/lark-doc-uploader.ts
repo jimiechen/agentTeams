@@ -70,7 +70,8 @@ export class LarkDocUploader {
         } as any,
       });
 
-      const fileToken = (uploadResp.data as any)?.file_token || '';
+      // 注意：uploadAll 返回的 file_token 在根级别，不是在 data 里
+      const fileToken = (uploadResp as any)?.file_token || '';
       if (!fileToken) {
         throw new Error('文件上传失败：未返回 file_token');
       }

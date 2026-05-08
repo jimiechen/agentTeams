@@ -1,0 +1,12 @@
+﻿[info]: [ 'client ready' ]
+=== 娴嬭瘯 upload_all 杩斿洖鍊肩粨鏋?===
+
+杩斿洖鍊肩被鍨? object
+杩斿洖鍊奸敭: [ 'file_token', 'version' ]
+
+uploadResp.data: undefined
+
+uploadResp 鍘熷: {
+  file_token: 'J5SPbh66Coxhttxa6y9cT5CnnAf',
+  version: '7637384664864295904'
+}
