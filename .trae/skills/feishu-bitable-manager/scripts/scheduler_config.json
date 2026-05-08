@@ -1,0 +1,20 @@
+{
+  "app_token": "SRK2bKXmmaWBcVsLds5cWjahnpc",
+  "table_id": "tblp8ByhFU5YUsZP",
+  "chat_id": "oc_9f741c1f2d5b1fc1e98a0b42c04283c5",
+  "python_path": "C:\\Users\\July\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+  "enabled_tasks": {
+    "postmarket_reminder": true,
+    "daily_review": true
+  },
+  "schedule": {
+    "postmarket_reminder": {
+      "hour": 15,
+      "minute": 0
+    },
+    "daily_review": {
+      "hour": 15,
+      "minute": 30
+    }
+  }
+}
