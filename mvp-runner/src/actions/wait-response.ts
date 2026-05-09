@@ -253,11 +253,11 @@ function findFirstTerminalBtnTime(snapshots: SystemSnapshot[]): number | null {
 async function getLastAIResponse(cdp: CDPClient): Promise<string> {
   const result = await cdp.evaluate<string | null>(`
     (function() {
-      ${GET_SCOPED_CHAT_ROOT_SCRIPT.replace('return { __root: true, element: chatRoot };', '')}
+      ${GET_SCOPED_CHAT_ROOT_SCRIPT}
       if (chatRoot && chatRoot.__error) return chatRoot.__error;
       if (!chatRoot) return '__NO_CHAT_ROOT__';
 
-      const root = chatRoot.element || chatRoot;
+      const root = chatRoot;
       const turns = root.querySelectorAll('.chat-turn');
       if (turns.length === 0) return '';
 
@@ -290,11 +290,11 @@ async function getLastAIResponse(cdp: CDPClient): Promise<string> {
  */
 const GET_SCOPED_LAST_AI_TURN_SCRIPT = `
 (function() {
-  ${GET_SCOPED_CHAT_ROOT_SCRIPT.replace('return { __root: true, element: chatRoot };', '')}
+  ${GET_SCOPED_CHAT_ROOT_SCRIPT}
   if (chatRoot && chatRoot.__error) return { __error: chatRoot.__error };
   if (!chatRoot) return { __error: '__NO_CHAT_ROOT__' };
 
-  const root = chatRoot.element || chatRoot;
+  const root = chatRoot;
   const turns = root.querySelectorAll('.chat-turn');
   if (turns.length === 0) return null;
 
@@ -356,11 +356,11 @@ export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
           images: Array<{ src: string; alt: string }>;
         } | null>(`
           (function() {
-            ${GET_SCOPED_CHAT_ROOT_SCRIPT.replace('return { __root: true, element: chatRoot };', '')}
+            ${GET_SCOPED_CHAT_ROOT_SCRIPT}
             if (chatRoot && chatRoot.__error) return { __error: chatRoot.__error };
             if (!chatRoot) return { __error: '__NO_CHAT_ROOT__' };
 
-            const root = chatRoot.element || chatRoot;
+            const root = chatRoot;
             const turns = root.querySelectorAll('.chat-turn');
             let lastAiTurn = null;
             for (let i = turns.length - 1; i >= 0; i--) {

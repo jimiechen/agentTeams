@@ -45,7 +45,6 @@ export class TaskScopeError extends Error {
  * @returns 聊天根容器的 JS 代码字符串（用于 CDP evaluate）
  */
 export const GET_SCOPED_CHAT_ROOT_SCRIPT = `
-(function() {
   // 1. 找到当前选中的任务项
   const activeTask = document.querySelector('${SELECTORS.ACTIVE_TASK}');
   if (!activeTask) return { __error: '__NO_ACTIVE_TASK__' };
@@ -57,37 +56,32 @@ export const GET_SCOPED_CHAT_ROOT_SCRIPT = `
     if (!container) return { __error: '__NO_CONTAINER__' };
   }
 
-  // 3. 在 container 的直接子元素中找到包含 chat-turn 的 split-view-view
-  // 修复：使用 :scope > 限定直接子元素，避免递归查找嵌套的 chat-turn
+  // 3. 在 container 的所有后代元素中找到包含 chat-turn 的 split-view-view
+  // 修复：递归查找所有 split-view-view，找到包含 chat-turn 的那个
   const views = container.querySelectorAll(':scope > ${SELECTORS.SPLIT_VIEW_VIEW}');
   let chatRoot = null;
+  
+  // 首先尝试直接子元素
   for (const view of views) {
-    // 只查找直接子元素中的 chat-turn，不递归到嵌套的 split-view-view 中
     const directChatTurns = view.querySelectorAll(':scope > * > .chat-turn, :scope > .chat-turn');
     if (directChatTurns.length > 0) {
       chatRoot = view;
       break;
     }
   }
-
-  // 4. 如果直接子元素没找到，尝试更宽松的查找（但排除嵌套的 split-view-view）
+  
+  // 如果直接子元素没找到，递归查找嵌套的 split-view-view
   if (!chatRoot) {
     for (const view of views) {
-      // 获取所有 chat-turn，但排除嵌套在另一个 split-view-view 中的
-      const allTurns = view.querySelectorAll('.chat-turn');
-      let hasDirectTurn = false;
-      for (const turn of allTurns) {
-        // 确保这个 chat-turn 不是嵌套在另一个 split-view-view 中的
-        const parentSplitView = turn.closest('.split-view-view');
-        if (parentSplitView === view) {
-          hasDirectTurn = true;
+      const nestedViews = view.querySelectorAll('.split-view-view');
+      for (const nestedView of nestedViews) {
+        const turns = nestedView.querySelectorAll('.chat-turn');
+        if (turns.length > 0) {
+          chatRoot = nestedView;
           break;
         }
       }
-      if (hasDirectTurn) {
-        chatRoot = view;
-        break;
-      }
+      if (chatRoot) break;
     }
   }
 
@@ -97,9 +91,6 @@ export const GET_SCOPED_CHAT_ROOT_SCRIPT = `
   }
 
   if (!chatRoot) return { __error: '__NO_CHAT_ROOT__' };
-
-  return { __root: true, element: chatRoot };
-})()
 `;
 
 /**
@@ -113,11 +104,11 @@ export const GET_SCOPED_CHAT_ROOT_SCRIPT = `
 export function buildScopedQuery(innerSelector: string, queryType: 'single' | 'all' = 'all'): string {
   return `
     (function() {
-      ${GET_SCOPED_CHAT_ROOT_SCRIPT.replace('return { __root: true, element: chatRoot };', '')}
-      if (chatRoot.__error) return chatRoot.__error;
+      ${GET_SCOPED_CHAT_ROOT_SCRIPT}
+      if (chatRoot && chatRoot.__error) return chatRoot.__error;
       if (!chatRoot) return '__NO_CHAT_ROOT__';
 
-      const root = chatRoot.element || chatRoot;
+      const root = chatRoot;
       ${queryType === 'all'
         ? `return Array.from(root.querySelectorAll(${JSON.stringify(innerSelector)}));`
         : `return root.querySelector(${JSON.stringify(innerSelector)}) || null;`
