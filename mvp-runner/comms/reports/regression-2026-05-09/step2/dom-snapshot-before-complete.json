@@ -1,0 +1,264 @@
+{
+  "url": "vscode-file://vscode-app/c:/Users/July/AppData/Local/Programs/Trae%20CN/resources/app/out/vs/code/electron-browser/workbench/workbench.html",
+  "chatTurns": 7,
+  "selectedTask": "PMCLI任务完成18:00",
+  "splitViewStructure": [
+    {
+      "index": 0,
+      "hasChatTurns": 0,
+      "textPreview": ""
+    },
+    {
+      "index": 1,
+      "hasChatTurns": 7,
+      "textPreview": "新任务Ctrl+Alt+N任务5DEVCLI进行中18:31PMCLI任务完成18:00Wikibot任务中断昨天 16:00PM任务完成昨天 14:36TESTCLI任务完成5月1日 23:28 优速通，告别排队 \n  \nTRAETraePMCLI参考了 3 个上下文读取事故报告 INCIDENT_TASK_INTERRUPT_2026-05-08.md，理解问题背景0/4 已完成读取事故报告 "
+    },
+    {
+      "index": 2,
+      "hasChatTurns": 0,
+      "textPreview": "新任务Ctrl+Alt+N任务5DEVCLI进行中18:31PMCLI任务完成18:00Wikibot任务中断昨天 16:00PM任务完成昨天 14:36TESTCLI任务完成5月1日 23:28"
+    },
+    {
+      "index": 3,
+      "hasChatTurns": 7,
+      "textPreview": " 优速通，告别排队 \n  \nTRAETraePMCLI参考了 3 个上下文读取事故报告 INCIDENT_TASK_INTERRUPT_2026-05-08.md，理解问题背景0/4 已完成读取事故报告 INCIDENT_TASK_INTERRUPT_2026-05-08.md，理解问题背景搜索 lastTurns 相关代码，定位维护对象和诊断逻辑分析诊断机制如何获取到'现在几点'任务输出详细报告"
+    },
+    {
+      "index": 4,
+      "hasChatTurns": 0,
+      "textPreview": " 优速通，告别排队 \n  \n"
+    },
+    {
+      "index": 5,
+      "hasChatTurns": 7,
+      "textPreview": "TRAETraePMCLI参考了 3 个上下文读取事故报告 INCIDENT_TASK_INTERRUPT_2026-05-08.md，理解问题背景0/4 已完成读取事故报告 INCIDENT_TASK_INTERRUPT_2026-05-08.md，理解问题背景搜索 lastTurns 相关代码，定位维护对象和诊断逻辑分析诊断机制如何获取到'现在几点'任务输出详细报告文档，提交架构师确认comm"
+    },
+    {
+      "index": 6,
+      "hasChatTurns": 7,
+      "textPreview": "PMCLI参考了 3 个上下文读取事故报告 INCIDENT_TASK_INTERRUPT_2026-05-08.md，理解问题背景0/4 已完成读取事故报告 INCIDENT_TASK_INTERRUPT_2026-05-08.md，理解问题背景搜索 lastTurns 相关代码，定位维护对象和诊断逻辑分析诊断机制如何获取到'现在几点'任务输出详细报告文档，提交架构师确认comms\\report"
+    },
+    {
+      "index": 7,
+      "hasChatTurns": 0,
+      "textPreview": "实时跟随\n  \n\n  \n\n  \n\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。TabAI会话_1777266160703.mdlark-monitor.ps1index.tscheck-task-status.js.env.pmcli.envlark-doc-uploader.tsINCIDENT_TASK_INTERRUPT_2026-05-08.md (Preview)1.md…\\rese"
+    },
+    {
+      "index": 8,
+      "hasChatTurns": 0,
+      "textPreview": "实时跟随\n  \n\n  \n\n  \n"
+    },
+    {
+      "index": 9,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。TabAI会话_1777266160703.mdlark-monitor.ps1index.tscheck-task-status.js.env.pmcli.envlark-doc-uploader.tsINCIDENT_TASK_INTERRUPT_2026-05-08.md (Preview)1.md…\\research1.md (Previe"
+    },
+    {
+      "index": 10,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。TabAI会话_1777266160703.mdlark-monitor.ps1index.tscheck-task-status.js.env.pmcli.envlark-doc-uploader.tsINCIDENT_TASK_INTERRUPT_2026-05-08.md (Preview)1.md…\\research1.md (Previe"
+    },
+    {
+      "index": 11,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。TabAI会话_1777266160703.mdlark-monitor.ps1index.tscheck-task-status.js.env.pmcli.envlark-doc-uploader.tsINCIDENT_TASK_INTERRUPT_2026-05-08.md (Preview)1.md…\\research1.md (Previe"
+    },
+    {
+      "index": 12,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。TabAI会话_1777266160703.mdlark-monitor.ps1index.tscheck-task-status.js.env.pmcli.envlark-doc-uploader.tsINCIDENT_TASK_INTERRUPT_2026-05-08.md (Preview)1.md…\\research1.md (Previe"
+    },
+    {
+      "index": 13,
+      "hasChatTurns": 0,
+      "textPreview": "问题输出终端端口调试控制台终端终端.xterm .xterm-scrollable-element > .scrollbar > .slider {\n  background: #64646466;\n}\n.xterm .xterm-scrollable-element > .scrollbar > .slider:hover {\n  background: #646464b3;\n}\n.xterm "
+    },
+    {
+      "index": 14,
+      "hasChatTurns": 0,
+      "textPreview": "终端.xterm .xterm-scrollable-element > .scrollbar > .slider {\n  background: #64646466;\n}\n.xterm .xterm-scrollable-element > .scrollbar > .slider:hover {\n  background: #646464b3;\n}\n.xterm .xterm-scrollab"
+    },
+    {
+      "index": 15,
+      "hasChatTurns": 0,
+      "textPreview": ".xterm .xterm-scrollable-element > .scrollbar > .slider {\n  background: #64646466;\n}\n.xterm .xterm-scrollable-element > .scrollbar > .slider:hover {\n  background: #646464b3;\n}\n.xterm .xterm-scrollable"
+    },
+    {
+      "index": 16,
+      "hasChatTurns": 0,
+      "textPreview": ".xterm .xterm-scrollable-element > .scrollbar > .slider {\n  background: #64646466;\n}\n.xterm .xterm-scrollable-element > .scrollbar > .slider:hover {\n  background: #646464b3;\n}\n.xterm .xterm-scrollable"
+    },
+    {
+      "index": 17,
+      "hasChatTurns": 0,
+      "textPreview": "branch.xterm .xterm-scrollable-element > .scrollbar > .slider {\n  background: #64646466;\n}\n.xterm .xterm-scrollable-element > .scrollbar > .slider:hover {\n  background: #646464b3;\n}\n.xterm .xterm-scro"
+    },
+    {
+      "index": 18,
+      "hasChatTurns": 0,
+      "textPreview": ".xterm .xterm-scrollable-element > .scrollbar > .slider {\n  background: #64646466;\n}\n.xterm .xterm-scrollable-element > .scrollbar > .slider:hover {\n  background: #646464b3;\n}\n.xterm .xterm-scrollable"
+    },
+    {
+      "index": 19,
+      "hasChatTurns": 0,
+      "textPreview": " powershellmvp-runner powershell trae-sandbox.monaco-list.list_id_6:focus .monaco-list-row.focused { background-color: var(--vscode-list-focusBackground); }\n.monaco-list.list_id_6:focus .monaco-list-r"
+    },
+    {
+      "index": 20,
+      "hasChatTurns": 0,
+      "textPreview": "资源管理器文件.traeagentsdocumentsskillsskills+docagents.config.yamlrules.md.uploadscommsdocs0430prdTabbitLARK_NOTIFICATION_IMPLEMENTATION.mdREVIEW_LARK_NOTIFICATION_2026-05-08.mdTabAI会话_1778209000670.mdTabA"
+    },
+    {
+      "index": 21,
+      "hasChatTurns": 0,
+      "textPreview": "文件.traeagentsdocumentsskillsskills+docagents.config.yamlrules.md.uploadscommsdocs0430prdTabbitLARK_NOTIFICATION_IMPLEMENTATION.mdREVIEW_LARK_NOTIFICATION_2026-05-08.mdTabAI会话_1778209000670.mdTabAI会话_1"
+    },
+    {
+      "index": 22,
+      "hasChatTurns": 0,
+      "textPreview": "大纲"
+    },
+    {
+      "index": 23,
+      "hasChatTurns": 0,
+      "textPreview": "时间线"
+    },
+    {
+      "index": 24,
+      "hasChatTurns": 0,
+      "textPreview": "Cue-Pro"
+    },
+    {
+      "index": 25,
+      "hasChatTurns": 0,
+      "textPreview": ""
+    },
+    {
+      "index": 26,
+      "hasChatTurns": 0,
+      "textPreview": " main 0  0 MEM 91%CUE\n\n\t\t\t\t/* Status bar focus outline */\n\t\t\t\t/* @icube remove focus highlight\n\t\t\t\t.monaco-workbench .part.statusbar:focus {\n\t\t\t\t\toutline-color: #ffffff;\n\t\t\t\t}\n\t\t\t\t*/\n\n\t\t\t\t/* Status ba"
+    },
+    {
+      "index": 27,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。DocView.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.m"
+    },
+    {
+      "index": 28,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。DocView.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.m"
+    },
+    {
+      "index": 29,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 30,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 31,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。权限管理 - PMCLI - 开发者后台预览.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-"
+    },
+    {
+      "index": 32,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。权限管理 - PMCLI - 开发者后台预览.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-"
+    },
+    {
+      "index": 33,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。DiffView.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n."
+    },
+    {
+      "index": 34,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。DiffView.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n."
+    },
+    {
+      "index": 35,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 36,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 37,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 38,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 39,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 40,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 41,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。智能体.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monac"
+    },
+    {
+      "index": 42,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。智能体.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monac"
+    },
+    {
+      "index": 43,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 44,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 45,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 46,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 47,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。设置.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco"
+    },
+    {
+      "index": 48,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。设置.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco"
+    },
+    {
+      "index": 49,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    },
+    {
+      "index": 50,
+      "hasChatTurns": 0,
+      "textPreview": "\n\n\n\n\n\n\n\n\n\n\n  \n一切就绪，只等你动手。.monaco-breadcrumbs { background-color: var(--vscode-breadcrumb-background)}.monaco-breadcrumbs .monaco-breadcrumb-item { color: var(--vscode-breadcrumb-foreground)}\n.monaco-b"
+    }
+  ],
+  "lastUserPrompt": "18:00用户34614810323当前分支还有什么问题没提交，检查下",
+  "lastAiResponse": "PMCLI我来检查当前分支的未提交变更。agentTeams白名单运行在终端查看$git statusOn branch main\nYour branch is up to date with 'origin/main'.\n\nnothing to commit, working tree clean当前分支状态：\n分支: main\n状态: 与远程 origin/main 同步\n未提交变更: 无（working tree clean）\n当前分支没有任何未提交的变更，所有修改都已提交。任务完成"
+}
