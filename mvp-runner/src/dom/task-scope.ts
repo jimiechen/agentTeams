@@ -1,6 +1,8 @@
 // src/dom/task-scope.ts - 任务作用域选择器与辅助函数
 // 基于 Step 0 DOM 实测结果：task-item 和 chat-turn 在同一个 split-view-container 的不同 split-view-view 中
 
+import { CDPClient } from '../cdp/client.js';
+
 /**
  * 任务作用域选择器常量
  * 所有选择器必须使用属性选择器或稳定业务类名，禁止硬编码 CSS Module 哈希
@@ -36,7 +38,9 @@ export class TaskScopeError extends Error {
 /**
  * 获取当前活动任务的聊天根容器
  * 策略：从 selected task-item 向上找到 split-view-container，
- * 然后找到包含 chat-turn 的 split-view-view
+ * 然后找到**直接包含** chat-turn 的 split-view-view（不是通过嵌套子元素）
+ *
+ * 修复：使用 :scope > 限定直接子元素，避免递归查找嵌套的 chat-turn
  *
  * @returns 聊天根容器的 JS 代码字符串（用于 CDP evaluate）
  */
@@ -53,17 +57,41 @@ export const GET_SCOPED_CHAT_ROOT_SCRIPT = `
     if (!container) return { __error: '__NO_CONTAINER__' };
   }
 
-  // 3. 在 container 的子元素中找到包含 chat-turn 的 split-view-view
+  // 3. 在 container 的直接子元素中找到包含 chat-turn 的 split-view-view
+  // 修复：使用 :scope > 限定直接子元素，避免递归查找嵌套的 chat-turn
   const views = container.querySelectorAll(':scope > ${SELECTORS.SPLIT_VIEW_VIEW}');
   let chatRoot = null;
   for (const view of views) {
-    if (view.querySelectorAll('${SELECTORS.CHAT_TURN}').length > 0) {
+    // 只查找直接子元素中的 chat-turn，不递归到嵌套的 split-view-view 中
+    const directChatTurns = view.querySelectorAll(':scope > * > .chat-turn, :scope > .chat-turn');
+    if (directChatTurns.length > 0) {
       chatRoot = view;
       break;
     }
   }
 
-  // 4. 兜底：如果找不到，尝试在 container 内直接查找
+  // 4. 如果直接子元素没找到，尝试更宽松的查找（但排除嵌套的 split-view-view）
+  if (!chatRoot) {
+    for (const view of views) {
+      // 获取所有 chat-turn，但排除嵌套在另一个 split-view-view 中的
+      const allTurns = view.querySelectorAll('.chat-turn');
+      let hasDirectTurn = false;
+      for (const turn of allTurns) {
+        // 确保这个 chat-turn 不是嵌套在另一个 split-view-view 中的
+        const parentSplitView = turn.closest('.split-view-view');
+        if (parentSplitView === view) {
+          hasDirectTurn = true;
+          break;
+        }
+      }
+      if (hasDirectTurn) {
+        chatRoot = view;
+        break;
+      }
+    }
+  }
+
+  // 5. 兜底：如果找不到，尝试在 container 内直接查找
   if (!chatRoot) {
     chatRoot = container.querySelector('.icube-chat-view-container, .chat-list-wrapper, [class*="chat-view"]');
   }
@@ -99,96 +127,46 @@ export function buildScopedQuery(innerSelector: string, queryType: 'single' | 'a
 }
 
 /**
- * 获取限定作用域的 chat-turn 列表
- * 用于替换全局 document.querySelectorAll('.chat-turn')
+ * 等待 DOM 稳定
+ * 用于 recovery 后确认 DOM 不再变化
+ *
+ * @param cdp CDP 客户端
+ * @param options 配置选项
+ * @returns 是否稳定
  */
-export const SCOPED_CHAT_TURN_SCRIPT = `
-(function() {
-  ${GET_SCOPED_CHAT_ROOT_SCRIPT.replace('return { __root: true, element: chatRoot };', '')}
-  if (chatRoot.__error) return chatRoot.__error;
-  if (!chatRoot) return '__NO_CHAT_ROOT__';
-
-  const root = chatRoot.element || chatRoot;
-  return Array.from(root.querySelectorAll('${SELECTORS.CHAT_TURN}'));
-})()
-`;
-
-/**
- * 获取最后一个 AI chat-turn（非用户消息）
- */
-export const GET_LAST_AI_TURN_SCRIPT = `
-(function() {
-  ${GET_SCOPED_CHAT_ROOT_SCRIPT.replace('return { __root: true, element: chatRoot };', '')}
-  if (chatRoot.__error) return chatRoot.__error;
-  if (!chatRoot) return '__NO_CHAT_ROOT__';
-
-  const root = chatRoot.element || chatRoot;
-  const turns = root.querySelectorAll('${SELECTORS.CHAT_TURN}');
-  if (turns.length === 0) return '';
-
-  for (let i = turns.length - 1; i >= 0; i--) {
-    const turn = turns[i];
-    if (!turn.classList.contains('user')) {
-      return (turn.innerText || '').replace(/复制图片/g, '').trim();
-    }
-  }
-  return '';
-})()
-`;
-
-export interface WaitForDomStableOptions {
-  selector: string;
-  stableMs: number;
-  timeoutMs: number;
-}
-
 export async function waitForDomStable(
-  cdp: { evaluate<T>(script: string): Promise<T> },
-  options: WaitForDomStableOptions
+  cdp: CDPClient,
+  options: {
+    selector: string;
+    stableMs: number;
+    timeoutMs: number;
+  }
 ): Promise<boolean> {
-  const { selector, stableMs, timeoutMs } = options;
+  const startTime = Date.now();
+  let lastHtml = '';
+  let stableStart = 0;
 
-  const result = await cdp.evaluate<{ stable: boolean; timedOut: boolean }>(`
-    new Promise((resolve) => {
-      const target = document.querySelector(${JSON.stringify(selector)});
-      if (!target) {
-        resolve({ stable: false, timedOut: false });
-        return;
+  while (Date.now() - startTime < options.timeoutMs) {
+    const currentHtml = await cdp.evaluate<string>(`
+      (function() {
+        const el = document.querySelector(${JSON.stringify(options.selector)});
+        return el ? el.outerHTML : '';
+      })()
+    `);
+
+    if (currentHtml === lastHtml) {
+      if (stableStart === 0) {
+        stableStart = Date.now();
+      } else if (Date.now() - stableStart >= options.stableMs) {
+        return true;
       }
+    } else {
+      stableStart = 0;
+      lastHtml = currentHtml;
+    }
 
-      let lastMutationTime = Date.now();
-      let stableTimer: ReturnType<typeof setTimeout> | null = null;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
 
-      const checkStable = () => {
-        const elapsed = Date.now() - lastMutationTime;
-        if (elapsed >= ${stableMs}) {
-          observer.disconnect();
-          resolve({ stable: true, timedOut: false });
-        }
-      };
-
-      const observer = new MutationObserver(() => {
-        lastMutationTime = Date.now();
-        if (stableTimer) clearTimeout(stableTimer);
-        stableTimer = setTimeout(checkStable, ${stableMs});
-      });
-
-      observer.observe(target, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        characterData: true,
-      });
-
-      setTimeout(() => {
-        observer.disconnect();
-        if (stableTimer) clearTimeout(stableTimer);
-        resolve({ stable: false, timedOut: true });
-      }, ${timeoutMs});
-
-      stableTimer = setTimeout(checkStable, ${stableMs});
-    })
-  `);
-
-  return result.stable;
+  return false;
 }
