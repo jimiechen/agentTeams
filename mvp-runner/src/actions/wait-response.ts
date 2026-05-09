@@ -4,6 +4,7 @@
 import createDebug from 'debug';
 import { CDPClient } from '../cdp/client.js';
 import { ResponseTimeoutError } from '../errors.js';
+import { TaskScopeError, GET_SCOPED_CHAT_ROOT_SCRIPT } from '../dom/task-scope.js';
 import { captureSnapshot, isModelStalled, isTaskCompleted, detectBlocking, SystemSnapshot } from './state-probe.js';
 import { recoverTerminalHang, recoverDeleteModal, recoverOverwriteModal, recoverModelStalled } from './recover.js';
 import { loadSignalState, updateSignalState, resetSignalState } from './signal-persist.js';
@@ -247,13 +248,19 @@ function findFirstTerminalBtnTime(snapshots: SystemSnapshot[]): number | null {
 
 /**
  * 获取最后一次 AI 响应内容
+ * 修复：使用任务作用域限定，避免获取到其他任务的 chat-turn
  */
 async function getLastAIResponse(cdp: CDPClient): Promise<string> {
-  const result = await cdp.evaluate(`
+  const result = await cdp.evaluate<string | null>(`
     (function() {
-      const turns = document.querySelectorAll('.chat-turn');
+      ${GET_SCOPED_CHAT_ROOT_SCRIPT.replace('return { __root: true, element: chatRoot };', '')}
+      if (chatRoot && chatRoot.__error) return chatRoot.__error;
+      if (!chatRoot) return '__NO_CHAT_ROOT__';
+
+      const root = chatRoot.element || chatRoot;
+      const turns = root.querySelectorAll('.chat-turn');
       if (turns.length === 0) return '';
-      
+
       for (let i = turns.length - 1; i >= 0; i--) {
         const turn = turns[i];
         if (!turn.classList.contains('user')) {
@@ -262,16 +269,52 @@ async function getLastAIResponse(cdp: CDPClient): Promise<string> {
           return text;
         }
       }
-      
+
       return '';
     })()
   `);
-  
+
+  if (result === '__NO_ACTIVE_TASK__') {
+    throw new TaskScopeError('Active task not found, refuse to return any chat-turn');
+  }
+  if (result === '__NO_CHAT_ROOT__') {
+    throw new TaskScopeError('Chat root not found for active task');
+  }
+
   return result || '';
 }
 
 /**
+ * 获取限定作用域的最后一个 AI chat-turn 元素
+ * 内部辅助函数，用于 getDetailedResult
+ */
+const GET_SCOPED_LAST_AI_TURN_SCRIPT = `
+(function() {
+  ${GET_SCOPED_CHAT_ROOT_SCRIPT.replace('return { __root: true, element: chatRoot };', '')}
+  if (chatRoot && chatRoot.__error) return { __error: chatRoot.__error };
+  if (!chatRoot) return { __error: '__NO_CHAT_ROOT__' };
+
+  const root = chatRoot.element || chatRoot;
+  const turns = root.querySelectorAll('.chat-turn');
+  if (turns.length === 0) return null;
+
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (!turns[i].classList.contains('user')) {
+      return {
+        __found: true,
+        text: turns[i].innerText || '',
+        html: turns[i].innerHTML || '',
+        hasCode: turns[i].innerHTML?.includes('<code') || false,
+      };
+    }
+  }
+  return null;
+})()
+`;
+
+/**
  * 获取详细的任务结果
+ * 修复：使用任务作用域限定，避免获取到其他任务的 chat-turn
  */
 export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
   const result: TaskResult = {
@@ -286,38 +329,39 @@ export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
   };
 
   try {
-    const data = await cdp.evaluate(`
-      (function() {
-        const turns = document.querySelectorAll('.chat-turn');
-        if (turns.length === 0) return null;
-        
-        let lastAiTurn = null;
-        for (let i = turns.length - 1; i >= 0; i--) {
-          if (!turns[i].classList.contains('user')) {
-            lastAiTurn = turns[i];
-            break;
-          }
-        }
-        
-        if (!lastAiTurn) return null;
-        
-        return {
-          text: lastAiTurn.innerText || '',
-          html: lastAiTurn.innerHTML || '',
-          hasCode: lastAiTurn.innerHTML?.includes('<code') || false,
-        };
-      })()
-    `);
-    
-    if (data) {
+    const data = await cdp.evaluate<{
+      __error?: string;
+      __found?: boolean;
+      text?: string;
+      html?: string;
+      hasCode?: boolean;
+    } | null>(GET_SCOPED_LAST_AI_TURN_SCRIPT);
+
+    if (data?.__error === '__NO_ACTIVE_TASK__') {
+      throw new TaskScopeError('Active task not found in getDetailedResult');
+    }
+    if (data?.__error === '__NO_CHAT_ROOT__') {
+      throw new TaskScopeError('Chat root not found for active task');
+    }
+
+    if (data && data.__found) {
       result.text = data.text?.replace(/复制图片/g, '').trim() || '';
       result.html = data.html || '';
       result.hasCodeBlock = data.hasCode || false;
-      
+
+      // 修复点 #3: 代码块提取也使用作用域限定
       if (result.hasCodeBlock) {
-        const detailData = await cdp.evaluate(`
+        const detailData = await cdp.evaluate<{
+          codeBlocks: Array<{ language: string; code: string }>;
+          images: Array<{ src: string; alt: string }>;
+        } | null>(`
           (function() {
-            const turns = document.querySelectorAll('.chat-turn');
+            ${GET_SCOPED_CHAT_ROOT_SCRIPT.replace('return { __root: true, element: chatRoot };', '')}
+            if (chatRoot && chatRoot.__error) return { __error: chatRoot.__error };
+            if (!chatRoot) return { __error: '__NO_CHAT_ROOT__' };
+
+            const root = chatRoot.element || chatRoot;
+            const turns = root.querySelectorAll('.chat-turn');
             let lastAiTurn = null;
             for (let i = turns.length - 1; i >= 0; i--) {
               if (!turns[i].classList.contains('user')) {
@@ -326,7 +370,7 @@ export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
               }
             }
             if (!lastAiTurn) return { codeBlocks: [], images: [] };
-            
+
             return {
               codeBlocks: Array.from(lastAiTurn.querySelectorAll('pre code')).map(code => ({
                 language: (code.className.match(/language-(\\w+)/)?.[1] || 'text'),
@@ -348,12 +392,16 @@ export async function getDetailedResult(cdp: CDPClient): Promise<TaskResult> {
             };
           })()
         `);
-        result.codeBlocks = detailData?.codeBlocks || [];
-        result.images = detailData?.images || [];
-        result.hasImage = result.images.length > 0;
+
+        if (detailData && !('__error' in detailData)) {
+          result.codeBlocks = detailData.codeBlocks || [];
+          result.images = detailData.images || [];
+          result.hasImage = result.images.length > 0;
+        }
       }
     }
   } catch (err) {
+    if (err instanceof TaskScopeError) throw err;
     debug('Parse error: %s', (err as Error).message);
   }
 

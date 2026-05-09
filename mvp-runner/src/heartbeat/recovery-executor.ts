@@ -13,6 +13,7 @@ import {
 import { recoveryRateLimiter, type RateLimitResult } from '../utils/rate-limiter.js';
 import type { HeartbeatMode, BackgroundTimeoutRecoveryConfig } from './types.js';
 import { DEFAULT_BACKGROUND_TIMEOUT_CONFIG } from './types.js';
+import { waitForDomStable, SELECTORS } from '../dom/task-scope.js';
 import { HealthStateMachine } from './state-machine.js';
 import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'fs';
 import path from 'path';
@@ -307,6 +308,14 @@ export class RecoveryExecutor {
         debug('  - %s: %s (%dms, %d attempts)', r.action.id, r.success ? '✅ success' : '❌ failed', r.duration, r.attempts);
         if (r.error) debug('    error: %s', r.error);
       }
+
+      // 等待 DOM 稳定（任务隔离修复：确保 recovery 后 DOM 不再变化）
+      const domStable = await waitForDomStable(this.cdp, {
+        selector: SELECTORS.ACTIVE_TASK,
+        stableMs: 500,
+        timeoutMs: 5000,
+      });
+      debug('DOM stability after recovery: %s', domStable ? 'stable' : 'timed out');
 
       return results;
     } finally {

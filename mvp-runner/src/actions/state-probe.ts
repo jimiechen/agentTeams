@@ -3,6 +3,7 @@
 
 import createDebug from 'debug';
 import { CDPClient } from '../cdp/client.js';
+import { GET_SCOPED_CHAT_ROOT_SCRIPT } from '../dom/task-scope.js';
 
 const debug = createDebug('mvp:probe');
 
@@ -77,12 +78,40 @@ export async function captureSnapshot(cdp: CDPClient): Promise<SystemSnapshot> {
       const btnDisabled = sendBtn?.disabled || false;
 
       // 信号2：最后一个chat-turn（当前活动任务）
-      const turns = document.querySelectorAll('.chat-turn');
-      const lastTurn = turns[turns.length - 1];
-      const lastTurnText = lastTurn?.textContent || '';
-      const lastTurnTextLen = lastTurnText.length;
-
-      // 信号3：终端超时按钮（当前活动任务）
+      // 修复：使用任务作用域限定，避免获取到其他任务的 chat-turn
+      let lastTurnText = '';
+      let lastTurnTextLen = 0;
+      try {
+        const activeTask = document.querySelector('[class*="task-item"][class*="selected"]');
+        if (activeTask) {
+          let container = activeTask;
+          while (container && !container.classList.contains('split-view-container')) {
+            container = container.parentElement;
+          }
+          if (container) {
+            const views = container.querySelectorAll(':scope > .split-view-view');
+            let chatRoot = null;
+            for (const view of views) {
+              if (view.querySelectorAll('.chat-turn').length > 0) {
+                chatRoot = view;
+                break;
+              }
+            }
+            if (chatRoot) {
+              const turns = chatRoot.querySelectorAll('.chat-turn');
+              for (let i = turns.length - 1; i >= 0; i--) {
+                if (!turns[i].classList.contains('user')) {
+                  lastTurnText = turns[i].innerText || '';
+                  lastTurnTextLen = lastTurnText.length;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // 忽略错误，保持默认值
+      }      // 信号3：终端超时按钮（当前活动任务）
       const terminalBtns = document.querySelectorAll('.icd-btn.icd-btn-tertiary');
       let hasTerminalBtn = false;
       let terminalBtnText = '';
