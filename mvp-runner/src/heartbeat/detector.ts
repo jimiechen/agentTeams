@@ -9,8 +9,8 @@ import type {
   DetectionResult,
   HeartbeatMode,
   Signal,
-  BackgroundStateContext,
 } from './types.js';
+import type { BackgroundStateContext } from './state-machine.js';
 import { DEFAULT_HEARTBEAT_CONFIG, DEFAULT_BACKGROUND_TIMEOUT_CONFIG } from './types.js';
 import { HealthStateMachine } from './state-machine.js';
 import { Layer1Collector, type Layer1Payload } from './layer1.js';
